@@ -31,7 +31,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Release APK
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleDebug
 
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch'
