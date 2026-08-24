@@ -49,11 +49,9 @@ import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.entities.ServersCache
 import com.v2ray.ang.extension.isComplexType
 import com.v2ray.ang.extension.nullIfBlank
-import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.ui.compose.ReorderableGridItem
 import com.v2ray.ang.ui.compose.ReorderableListItem
-import com.v2ray.ang.ui.compose.colorConfigType
 import com.v2ray.ang.ui.compose.colorPing
 import com.v2ray.ang.ui.compose.colorPingRed
 import com.v2ray.ang.ui.compose.verticalScrollbar
@@ -96,8 +94,6 @@ fun GroupPagerPage(
         lazyGridStates = lazyGridStates,
         onSelectServer = onSelectServer,
         onEditServer = onEditServer,
-        onShareServer = onShareServer,
-        onMoreServer = onMoreServer,
         onRemoveServer = onRemoveServer,
         onMoveServer = { fromIndex, toIndex -> mainViewModel.moveServer(groupId, fromIndex, toIndex) },
         contentPadding = contentPadding
@@ -117,8 +113,6 @@ private fun ServerListPage(
     lazyGridStates: MutableMap<String, LazyGridState>,
     onSelectServer: (String) -> Unit,
     onEditServer: (String, ProfileItem) -> Unit,
-    onShareServer: (String, ProfileItem) -> Unit,
-    onMoreServer: (String, ProfileItem) -> Unit,
     onRemoveServer: (String) -> Unit,
     onMoveServer: (Int, Int) -> Unit,
     contentPadding: PaddingValues
@@ -147,11 +141,8 @@ private fun ServerListPage(
                         serverCache = serverCache,
                         selectedGuid = selectedGuid,
                         subscriptionId = subscriptionId,
-                        doubleColumnDisplay = true,
                         onSelectServer = onSelectServer,
                         onEditServer = onEditServer,
-                        onShareServer = onShareServer,
-                        onMoreServer = onMoreServer,
                         onRemoveServer = onRemoveServer
                     )
                 }
@@ -203,8 +194,6 @@ private fun ServerListPage(
                                 subscriptionId = subscriptionId,
                                 onSelectServer = onSelectServer,
                                 onEditServer = onEditServer,
-                                onShareServer = onShareServer,
-                                onMoreServer = onMoreServer,
                                 onRemoveServer = onRemoveServer
                             )
                         }
@@ -216,8 +205,6 @@ private fun ServerListPage(
                         subscriptionId = subscriptionId,
                         onSelectServer = onSelectServer,
                         onEditServer = onEditServer,
-                        onShareServer = onShareServer,
-                        onMoreServer = onMoreServer,
                         onRemoveServer = onRemoveServer
                     )
                 }
@@ -233,8 +220,6 @@ private fun ServerItemRow(
     subscriptionId: String,
     onSelectServer: (String) -> Unit,
     onEditServer: (String, ProfileItem) -> Unit,
-    onShareServer: (String, ProfileItem) -> Unit,
-    onMoreServer: (String, ProfileItem) -> Unit,
     onRemoveServer: (String) -> Unit
 ) {
     val profile = serverCache.profile
@@ -245,18 +230,12 @@ private fun ServerItemRow(
 
     ServerListItem(
         remarks = profile.remarks,
-        statistics = profile.description.nullIfBlank()
-            ?: AngConfigManager.generateDescription(profile),
-        typeDescription = getProtocolDescription(profile),
         testDelayMillis = serverCache.testDelayMillis,
         isSelected = serverCache.guid == selectedGuid,
         subscriptionRemarks = subRemarks,
-        doubleColumnDisplay = false,
         onClick = { onSelectServer(serverCache.guid) },
-        onShare = { onShareServer(serverCache.guid, profile) },
         onEdit = { onEditServer(serverCache.guid, profile) },
-        onRemove = { onRemoveServer(serverCache.guid) },
-        onMore = { onMoreServer(serverCache.guid, profile) }
+        onRemove = { onRemoveServer(serverCache.guid) }
     )
 }
 
@@ -265,11 +244,8 @@ private fun ServerItemColumn(
     serverCache: ServersCache,
     selectedGuid: String?,
     subscriptionId: String,
-    doubleColumnDisplay: Boolean,
     onSelectServer: (String) -> Unit,
     onEditServer: (String, ProfileItem) -> Unit,
-    onShareServer: (String, ProfileItem) -> Unit,
-    onMoreServer: (String, ProfileItem) -> Unit,
     onRemoveServer: (String) -> Unit
 ) {
     val profile = serverCache.profile
@@ -279,17 +255,12 @@ private fun ServerItemColumn(
     Column {
         ServerListItem(
             remarks = profile.remarks,
-            statistics = profile.description.nullIfBlank() ?: AngConfigManager.generateDescription(profile),
-            typeDescription = getProtocolDescription(profile),
             testDelayMillis = serverCache.testDelayMillis,
             isSelected = serverCache.guid == selectedGuid,
             subscriptionRemarks = subRemarks,
-            doubleColumnDisplay = doubleColumnDisplay,
             onClick = { onSelectServer(serverCache.guid) },
             onEdit = { onEditServer(serverCache.guid, profile) },
-            onShare = { onShareServer(serverCache.guid, profile) },
-            onRemove = { onRemoveServer(serverCache.guid) },
-            onMore = { onMoreServer(serverCache.guid, profile) }
+            onRemove = { onRemoveServer(serverCache.guid) }
         )
     }
 }
@@ -297,17 +268,12 @@ private fun ServerItemColumn(
 @Composable
 fun ServerListItem(
     remarks: String,
-    statistics: String,
-    typeDescription: String,
     testDelayMillis: Long,
     isSelected: Boolean,
     subscriptionRemarks: String,
-    doubleColumnDisplay: Boolean,
     onClick: () -> Unit,
     onEdit: () -> Unit,
-    onShare: () -> Unit,
     onRemove: () -> Unit,
-    onMore: () -> Unit,
     modifier: Modifier = Modifier,
     dragModifier: Modifier = Modifier
 ) {
@@ -322,7 +288,6 @@ fun ServerListItem(
         null
     }
 
-    // رنگ کپسول: آبی شیشه‌ای برای حالت انتخاب شده، و خاکستری/سورمه‌ای نیمه‌شفاف برای حالت عادی
     val cardBackgroundColor = if (isSelected) {
         MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
     } else {
@@ -350,80 +315,63 @@ fun ServerListItem(
                 .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 16.dp)
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(remarks, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(lineBreak = LineBreak.Paragraph), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (doubleColumnDisplay) {
-                    IconButton(onClick = onMore, Modifier.size(36.dp)) {
-                        Icon(
-                            painterResource(R.drawable.ic_more_vert_24dp),
-                            stringResource(R.string.acc_more),
-                            Modifier.size(24.dp)
-                        )
-                    }
-                } else {
-                    IconButton(onClick = onShare, Modifier.size(36.dp)) {
-                        Icon(
-                            painterResource(R.drawable.ic_share_24dp),
-                            stringResource(R.string.title_configuration_share),
-                            Modifier.size(24.dp)
-                        )
-                    }
-                    IconButton(onClick = onEdit, Modifier.size(36.dp)) {
-                        Icon(
-                            painterResource(R.drawable.ic_edit_24dp),
-                            stringResource(R.string.acc_edit),
-                            Modifier.size(24.dp)
-                        )
-                    }
-                    IconButton(onClick = onRemove, Modifier.size(36.dp)) {
-                        Icon(
-                            painterResource(R.drawable.ic_delete_24dp),
-                            stringResource(R.string.acc_delete),
-                            Modifier.size(24.dp)
-                        )
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                if (subscriptionRemarks.isNotBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(subscriptionRemarks.take(1).uppercase(), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                }
-                Text(statistics, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(typeDescription, style = MaterialTheme.typography.bodySmall, color = colorConfigType, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(testResult, style = MaterialTheme.typography.bodySmall, color = if (testDelayMillis < 0L) colorPingRed else colorPing, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
-}
+                // نام کانفیگ
+                Text(
+                    text = remarks,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge.copy(lineBreak = LineBreak.Paragraph),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
 
-private fun getProtocolDescription(profile: ProfileItem): String {
-    if (profile.configType.isComplexType()) return profile.configType.name
-    val parts = mutableListOf(profile.configType.name)
-    profile.network?.let { net ->
-        if (net.isNotBlank() && !net.equals("tcp", ignoreCase = true)) parts.add(net)
-    }
-    profile.security?.let { sec ->
-        if (sec.isNotBlank()) {
-            if (profile.insecure == true && sec.equals("tls", ignoreCase = true)) {
-                parts.add("$sec insecure")
-            } else {
-                parts.add(sec)
+                // دکمه ویرایش
+                IconButton(onClick = onEdit, Modifier.size(36.dp)) {
+                    Icon(
+                        painterResource(R.drawable.ic_edit_24dp),
+                        stringResource(R.string.acc_edit),
+                        Modifier.size(24.dp)
+                    )
+                }
+
+                // دکمه حذف
+                IconButton(onClick = onRemove, Modifier.size(36.dp)) {
+                    Icon(
+                        painterResource(R.drawable.ic_delete_24dp),
+                        stringResource(R.string.acc_delete),
+                        Modifier.size(24.dp)
+                    )
+                }
+            }
+
+            // نمایش پینگ و اشتراک در صورت وجود
+            if (subscriptionRemarks.isNotBlank() || testResult.isNotBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    if (subscriptionRemarks.isNotBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(subscriptionRemarks.take(1).uppercase(), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.width(1.dp))
+                    }
+
+                    Text(
+                        text = testResult,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (testDelayMillis < 0L) colorPingRed else colorPing,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
-    return parts.joinToString(" / ")
 }
 
 internal suspend fun PagerState.navigateToPageOptimized(

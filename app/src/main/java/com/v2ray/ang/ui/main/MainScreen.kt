@@ -1,6 +1,6 @@
 package com.v2ray.ang.ui.main
 
-import android.widget.Toast // اضافه شده برای پیام آپدیت
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,7 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext // اضافه شده برای توست
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -64,7 +64,7 @@ fun MainScreen(
     val doubleColumnDisplay = uiState.doubleColumnDisplay
     val confirmRemove = uiState.confirmRemove
     val shareQRCodeBitmap = uiState.shareQRCodeBitmap
-    val context = LocalContext.current // دسترسی به کانتکست برای پیام‌ها
+    val context = LocalContext.current
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -121,7 +121,6 @@ fun MainScreen(
             }
     }
 
-    // پینگ خودکار هر 20 ثانیه
     LaunchedEffect(isRunning) {
         if (isRunning) {
             kotlinx.coroutines.delay(2000)
@@ -132,7 +131,6 @@ fun MainScreen(
         }
     }
 
-    // استخراج پینگ
     val finalFormattedStatus = remember(displayText, isRunning) {
         if (!isRunning) return@remember " "
 
@@ -237,10 +235,7 @@ fun MainScreen(
                     onNavigate(route)
                 },
                 onCheckUpdate = {
-                    // پیام موقت به جای باز کردن صفحه جدید
                     Toast.makeText(context, "Checking for updates...", Toast.LENGTH_SHORT).show()
-                    // در اینجا اگر برنامه‌نویس هسته‌ی اندروید دستور خاصی برای چک کردن داشت،
-                    // می‌توان مستقیماً جایگزین این توست کرد.
                 }
             )
         }
@@ -365,7 +360,7 @@ fun MainScreen(
 }
 
 /**
- * دکمه اتصال نئونی طلایی و توخالی
+ * دکمه اتصال نئونی طلایی و توخالی (۱۵ درصد کوچکتر شده)
  */
 @Composable
 fun NeonConnectButton(
@@ -388,7 +383,7 @@ fun NeonConnectButton(
         Text(
             text = if (isRunning) formattedStatus else " ",
             color = Color(0xFFB0B0B0),
-            fontSize = 13.sp,
+            fontSize = 11.sp, // متن وضعیت هم کوچکتر شد
             modifier = Modifier.padding(bottom = 12.dp)
         )
 
@@ -398,24 +393,24 @@ fun NeonConnectButton(
             if (isRunning) {
                 Box(
                     modifier = Modifier
-                        .size(190.dp)
-                        .border(12.dp, goldenColor.copy(alpha = 0.05f), CircleShape)
+                        .size(161.dp) // قبلا 190 بود
+                        .border(10.dp, goldenColor.copy(alpha = 0.05f), CircleShape)
                 )
                 Box(
                     modifier = Modifier
-                        .size(178.dp)
-                        .border(6.dp, goldenColor.copy(alpha = 0.15f), CircleShape)
+                        .size(151.dp) // قبلا 178 بود
+                        .border(5.dp, goldenColor.copy(alpha = 0.15f), CircleShape)
                 )
                 Box(
                     modifier = Modifier
-                        .size(174.dp)
+                        .size(147.dp) // قبلا 174 بود
                         .border(3.dp, goldenColor.copy(alpha = 0.3f), CircleShape)
                 )
             }
 
             Box(
                 modifier = Modifier
-                    .size(170.dp)
+                    .size(144.dp) // قبلا 170 بود
                     .clip(CircleShape)
                     .background(Color.Transparent)
                     .border(width = 2.dp, color = ringColor, shape = CircleShape)
@@ -425,7 +420,7 @@ fun NeonConnectButton(
                 Text(
                     text = statusText,
                     color = textColor,
-                    fontSize = 16.sp,
+                    fontSize = 14.sp, // متن داخل دکمه کوچکتر شد
                     fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center
                 )
