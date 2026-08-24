@@ -1,0 +1,6 @@
+# Project exclude paths
+/.gradle/
+/app/build/
+/app/build/intermediates/javac/fdroidDebug/compileFdroidDebugJavaWithJavac/classes/
+/app/build/intermediates/javac/fdroidDebugAndroidTest/compileFdroidDebugAndroidTestJavaWithJavac/classes/
+/build/

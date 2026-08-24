@@ -1,0 +1,67 @@
+{
+  "version": 3,
+  "artifactType": {
+    "type": "APK",
+    "kind": "Directory"
+  },
+  "applicationId": "com.v2raymasters.ang",
+  "variantName": "fdroidRelease",
+  "elements": [
+    {
+      "type": "UNIVERSAL",
+      "filters": [],
+      "attributes": [],
+      "versionCode": 5074500,
+      "versionName": "2.3.5",
+      "outputFile": "V2raymasters_2.3.5_universal.apk"
+    },
+    {
+      "type": "ONE_OF_MANY",
+      "filters": [
+        {
+          "filterType": "ABI",
+          "value": "armeabi-v7a"
+        }
+      ],
+      "attributes": [],
+      "versionCode": 5074502,
+      "versionName": "2.3.5",
+      "outputFile": "V2raymasters_2.3.5_armeabi-v7a.apk"
+    },
+    {
+      "type": "ONE_OF_MANY",
+      "filters": [
+        {
+          "filterType": "ABI",
+          "value": "arm64-v8a"
+        }
+      ],
+      "attributes": [],
+      "versionCode": 5074501,
+      "versionName": "2.3.5",
+      "outputFile": "V2raymasters_2.3.5_arm64-v8a.apk"
+    }
+  ],
+  "elementType": "File",
+  "baselineProfiles": [
+    {
+      "minApi": 28,
+      "maxApi": 30,
+      "baselineProfiles": [
+        "baselineProfiles/1/V2raymasters_2.3.5_universal.dm",
+        "baselineProfiles/1/V2raymasters_2.3.5_armeabi-v7a.dm",
+        "baselineProfiles/1/V2raymasters_2.3.5_arm64-v8a.dm"
+      ]
+    },
+    {
+      "minApi": 31,
+      "maxApi": 2147483647,
+      "baselineProfiles": [
+        "baselineProfiles/0/V2raymasters_2.3.5_universal.dm",
+        "baselineProfiles/0/V2raymasters_2.3.5_armeabi-v7a.dm",
+        "baselineProfiles/0/V2raymasters_2.3.5_arm64-v8a.dm"
+      ]
+    }
+  ],
+  "minSdkVersionForDexing": 24
+}
