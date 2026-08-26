@@ -49,12 +49,6 @@ object CoreConfigManager {
                   "log": {
                     "loglevel": "warning"
                   },
-                  "fakedns": [
-                    {
-                      "ipPool": "198.18.0.0/15",
-                      "poolSize": 65535
-                    }
-                  ],
                   "dns": {
                     "hosts": {
                       "dns.adguard-dns.com": [
@@ -63,7 +57,6 @@ object CoreConfigManager {
                       ]
                     },
                     "servers": [
-                      "fakedns",
                       "https://dns.adguard-dns.com/dns-query"
                     ],
                     "queryStrategy": "UseIPv4"
@@ -79,8 +72,7 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic",
-                          "fakedns"
+                          "quic"
                         ],
                         "routeOnly": false
                       },
