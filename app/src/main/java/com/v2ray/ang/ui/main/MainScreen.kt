@@ -111,7 +111,8 @@ fun MainScreen(
     var locateInProgress by remember { mutableStateOf(false) }
 
     // --- استخراج نام و آی‌پی کانفیگ انتخاب شده ---
-    val selectedProfile = remember(selectedGuid) {
+    // با اضافه شدن کلید 'groups'، بلافاصله بعد از ذخیره ویرایش، اطلاعات این بخش به روز رسانی می‌شود
+    val selectedProfile = remember(selectedGuid, groups) {
         MmkvManager.decodeServerConfig(selectedGuid ?: "")
     }
     val configName = selectedProfile?.remarks ?: "Select Config"

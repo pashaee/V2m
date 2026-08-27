@@ -35,13 +35,41 @@ object CoreConfigManager {
         try {
             // --- شروع کدهای اختصاصی شما (MitM و Fragment) ---
             val serverConfig = MmkvManager.decodeServerConfig(guid)
-            if (serverConfig != null && serverConfig.configType == EConfigType.VLESS) {
-                // استخراج مقادیر از لینکی که کاربر وارد کرده است
+
+            // شرط هوشمند: فقط VLESS و فقط شبکه ws را فیلتر می‌کند
+            if (serverConfig != null && serverConfig.configType == EConfigType.VLESS && serverConfig.network == "ws") {
+
+                // استخراج متغیرهای پایه
                 val dynUuid = serverConfig.password ?: ""
                 val dynSni = serverConfig.sni ?: ""
                 val dynAddress = serverConfig.server ?: ""
                 val dynPort = serverConfig.serverPort ?: ""
                 val localPort = SettingsManager.getSocksPort()
+                val vpnMtu = SettingsManager.getVpnMtu()
+
+                // بررسی هوشمندانه برای نیاز به ساخت TUN در داخل Xray
+                val needTunInbound = SettingsManager.isVpnMode() && !SettingsManager.isUsingHevTun()
+                val tunInboundJson = if (needTunInbound) {
+                    """
+                    ,{
+                      "tag": "tun",
+                      "protocol": "tun",
+                      "settings": {
+                        "mtu": $vpnMtu
+                      },
+                      "sniffing": {
+                        "enabled": true,
+                        "destOverride": [
+                          "http",
+                          "tls",
+                          "quic",
+                          "fakedns"
+                        ],
+                        "routeOnly": false
+                      }
+                    }
+                    """.trimIndent()
+                } else ""
 
                 val customJson = """
                 {
@@ -49,6 +77,12 @@ object CoreConfigManager {
                   "log": {
                     "loglevel": "warning"
                   },
+                  "fakedns": [
+                    {
+                      "ipPool": "198.18.0.0/15",
+                      "poolSize": 65535
+                    }
+                  ],
                   "dns": {
                     "hosts": {
                       "dns.adguard-dns.com": [
@@ -57,6 +91,7 @@ object CoreConfigManager {
                       ]
                     },
                     "servers": [
+                      "fakedns",
                       "https://dns.adguard-dns.com/dns-query"
                     ],
                     "queryStrategy": "UseIPv4"
@@ -72,7 +107,8 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic"
+                          "quic",
+                          "fakedns"
                         ],
                         "routeOnly": false
                       },
@@ -81,7 +117,7 @@ object CoreConfigManager {
                         "udp": true,
                         "allowTransparent": false
                       }
-                    },
+                    }$tunInboundJson,
                     {
                       "tag": "tls-decrypt-h211",
                       "listen": "0.0.0.0",
@@ -247,7 +283,8 @@ object CoreConfigManager {
                     "rules": [
                       {
                         "inboundTag": [
-                          "socks"
+                          "socks",
+                          "tun"
                         ],
                         "port": 53,
                         "outboundTag": "dns-out"

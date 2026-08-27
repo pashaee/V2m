@@ -94,6 +94,19 @@ fun MainDrawerContent(
                 .padding(top = 8.dp)
         ) {
 
+            // ---> گزینه سابسکریپشن که اضافه شد <---
+            NavigationDrawerItem(
+                label = { Text(stringResource(R.string.title_sub_setting), color = Color.White) },
+                selected = false,
+                onClick = {
+                    onNavigate(MainDestination.Subscriptions)
+                    scope.launch { drawerState.close() }
+                },
+                icon = { Icon(painterResource(R.drawable.ic_subscriptions_24dp), tint = Color(0xFFB0B0B0), contentDescription = null) },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
+            )
+
             // 1. گزینه Check Update
             NavigationDrawerItem(
                 label = { Text(stringResource(R.string.update_check_for_update), color = Color.White) },
