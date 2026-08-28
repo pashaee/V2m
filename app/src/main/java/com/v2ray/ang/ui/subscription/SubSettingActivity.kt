@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,9 +15,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,9 +37,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,7 +59,6 @@ import com.v2ray.ang.ui.compose.QRCodeDialog
 import com.v2ray.ang.ui.compose.ReorderableListItem
 import com.v2ray.ang.ui.compose.SelectListDialog
 import com.v2ray.ang.ui.compose.SettingsSwitchItem
-import com.v2ray.ang.ui.compose.colorFabActive
 import com.v2ray.ang.ui.compose.NavigationBarsBottomPadding
 import com.v2ray.ang.ui.compose.verticalScrollbar
 import com.v2ray.ang.util.QRCodeDecoder
@@ -127,7 +134,10 @@ fun SubSettingScreen(
         viewModel.move(from.index, to.index)
     }
 
+    val limeGreen = Color(0xFFC6F044)
+
     Scaffold(
+        containerColor = Color.Black,
         contentWindowInsets = WindowInsets(0),
         topBar = {
             AppTopBar(
@@ -153,6 +163,9 @@ fun SubSettingScreen(
                 .verticalScrollbar(lazyListState),
             contentPadding = NavigationBarsBottomPadding()
         ) {
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+            }
             itemsIndexed(
                 items = subscriptions,
                 key = { _, item -> item.guid }
@@ -162,35 +175,47 @@ fun SubSettingScreen(
                         scope = this,
                         isDragging = isDragging
                     ) {
+                        // کادر شیشه‌ای و گرافیک اختصاصی سابسکریپشن
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 14.dp),
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(Color(0xFF1E1E1E))
+                                .padding(horizontal = 20.dp, vertical = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = subCache.subscription.remarks,
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = Color.White,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 if (subCache.subscription.url.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Spacer(modifier = Modifier.height(4.dp))
                                     Text(
                                         text = subCache.subscription.url,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = Color(0xFF888888),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = Utils.formatTimestamp(subCache.subscription.lastUpdated),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF333333))
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = Utils.formatTimestamp(subCache.subscription.lastUpdated),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFB0B0B0)
+                                    )
+                                }
                             }
 
                             Column(
@@ -199,32 +224,45 @@ fun SubSettingScreen(
                             ) {
                                 Row {
                                     if (subCache.subscription.url.isNotEmpty()) {
-                                        IconButton(onClick = {
-                                            shareTarget = Pair(subCache.guid, subCache.subscription.url)
-                                        }) {
+                                        IconButton(
+                                            onClick = { shareTarget = Pair(subCache.guid, subCache.subscription.url) },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
                                             Icon(
                                                 painter = painterResource(R.drawable.ic_share_24dp),
-                                                contentDescription = stringResource(R.string.acc_share_subscription)
+                                                contentDescription = stringResource(R.string.acc_share_subscription),
+                                                tint = Color(0xFF888888),
+                                                modifier = Modifier.size(20.dp)
                                             )
                                         }
                                     }
-                                    IconButton(onClick = { onEditSub(subCache.guid) }) {
+                                    IconButton(
+                                        onClick = { onEditSub(subCache.guid) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
                                         Icon(
                                             painter = painterResource(R.drawable.ic_edit_24dp),
-                                            contentDescription = stringResource(R.string.acc_edit)
+                                            contentDescription = stringResource(R.string.acc_edit),
+                                            tint = Color(0xFF888888),
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
-                                    IconButton(onClick = {
-                                        if (confirmRemove) removeTarget = subCache.guid
-                                        else onRemoveSub(subCache.guid)
-                                    }) {
+                                    IconButton(
+                                        onClick = {
+                                            if (confirmRemove) removeTarget = subCache.guid
+                                            else onRemoveSub(subCache.guid)
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
                                         Icon(
                                             painter = painterResource(R.drawable.ic_delete_24dp),
-                                            contentDescription = stringResource(R.string.acc_delete)
+                                            contentDescription = stringResource(R.string.acc_delete),
+                                            tint = Color(0xFF888888),
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Spacer(modifier = Modifier.height(8.dp))
                                 Switch(
                                     checked = subCache.subscription.enabled,
                                     onCheckedChange = { checked ->
@@ -232,16 +270,19 @@ fun SubSettingScreen(
                                         updated.enabled = checked
                                         viewModel.update(subCache.guid, updated)
                                     },
-                                    modifier = Modifier.scale(0.7f),
+                                    modifier = Modifier.scale(0.8f),
                                     colors = SwitchDefaults.colors(
-                                        checkedThumbColor = MaterialTheme.colorScheme.onSecondary,
-                                        checkedTrackColor = MaterialTheme.colorScheme.secondary
+                                        checkedThumbColor = Color.Black,
+                                        checkedTrackColor = limeGreen,
+                                        uncheckedThumbColor = Color.Gray,
+                                        uncheckedTrackColor = Color(0xFF333333),
+                                        checkedBorderColor = Color.Transparent,
+                                        uncheckedBorderColor = Color.Transparent
                                     )
                                 )
                             }
                         }
                     }
-                    ItemDivider()
                 }
             }
         }
@@ -291,6 +332,9 @@ fun SubSettingScreen(
 
         AlertDialog(
             onDismissRequest = { showUpdateDialog = false },
+            containerColor = Color(0xFF1E1E1E), // هماهنگی رنگ دیالوگ
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
             text = {
                 Column {
                     SettingsSwitchItem(
@@ -325,12 +369,12 @@ fun SubSettingScreen(
                     showUpdateDialog = false
                     onSubUpdate()
                 }) {
-                    Text(text = stringResource(R.string.action_ok))
+                    Text(text = stringResource(R.string.action_ok), color = limeGreen)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showUpdateDialog = false }) {
-                    Text(text = stringResource(R.string.action_cancel))
+                    Text(text = stringResource(R.string.action_cancel), color = Color.Gray)
                 }
             }
         )

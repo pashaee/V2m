@@ -431,8 +431,17 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
     LaunchedEffect(isRunning) {
         if (isRunning) {
             while (isActive) {
+                // خواندن زمان استارت از دیتابیس به صورت متن و تبدیل به عدد
+                val startTimeStr = com.v2ray.ang.handler.MmkvManager.decodeSettingsString("v2m_start_time")
+                val startTime = startTimeStr?.toLongOrNull() ?: 0L
+
+                if (startTime > 0L) {
+                    // محاسبه اختلاف زمان فعلی با زمان استارت
+                    secondsConnected = (System.currentTimeMillis() - startTime) / 1000
+                } else {
+                    secondsConnected = 0L
+                }
                 delay(1000)
-                secondsConnected++
             }
         } else {
             secondsConnected = 0L

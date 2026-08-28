@@ -766,6 +766,17 @@ class MainViewModel(
 
     // ---------- Running state ----------
     private fun updateRunningState(running: Boolean, clearTestingText: Boolean = true) {
+
+        // --- سیستم هوشمند ثبت زمان استارت (استفاده از String برای سازگاری با Mmkv) ---
+        if (running) {
+            val savedTimeStr = com.v2ray.ang.handler.MmkvManager.decodeSettingsString("v2m_start_time")
+            if (savedTimeStr.isNullOrEmpty() || savedTimeStr == "0") {
+                com.v2ray.ang.handler.MmkvManager.encodeSettings("v2m_start_time", System.currentTimeMillis().toString())
+            }
+        } else {
+            com.v2ray.ang.handler.MmkvManager.encodeSettings("v2m_start_time", "0")
+        }
+
         _uiState.update { state ->
             state.copy(
                 isRunning = running,
