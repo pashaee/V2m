@@ -94,7 +94,7 @@ fun MainDrawerContent(
                 .padding(top = 8.dp)
         ) {
 
-            // ---> گزینه سابسکریپشن که اضافه شد <---
+            // ---> 1. گزینه سابسکریپشن <---
             NavigationDrawerItem(
                 label = { Text(stringResource(R.string.title_sub_setting), color = Color.White) },
                 selected = false,
@@ -107,7 +107,20 @@ fun MainDrawerContent(
                 colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
             )
 
-            // 1. گزینه Check Update
+            // ---> 2. گزینه تنظیمات مسیریابی (Routing) که اضافه شد <---
+            NavigationDrawerItem(
+                label = { Text(stringResource(R.string.routing_settings_title), color = Color.White) },
+                selected = false,
+                onClick = {
+                    onNavigate(MainDestination.Routing)
+                    scope.launch { drawerState.close() }
+                },
+                icon = { Icon(painterResource(R.drawable.ic_routing_24dp), tint = Color(0xFFB0B0B0), contentDescription = null) },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
+            )
+
+            // 3. گزینه Check Update
             NavigationDrawerItem(
                 label = { Text(stringResource(R.string.update_check_for_update), color = Color.White) },
                 selected = false,
@@ -120,7 +133,7 @@ fun MainDrawerContent(
                 colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
             )
 
-            // 2. گزینه About
+            // 4. گزینه About
             NavigationDrawerItem(
                 label = { Text(stringResource(R.string.title_about), color = Color.White) },
                 selected = false,
@@ -133,7 +146,7 @@ fun MainDrawerContent(
                 colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
             )
 
-            // 3. گزینه Contact Us (لینک مستقیم به تلگرام)
+            // 5. گزینه Contact Us (لینک مستقیم به تلگرام)
             NavigationDrawerItem(
                 label = { Text("Contact Us", color = Color.White) },
                 selected = false,
