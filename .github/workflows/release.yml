@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Version (e.g. v2.0.2)'
+        description: 'Release Version (e.g. v2.0.3)'
         required: true
-        default: 'v2.0.2'
+        default: 'v2.0.3'
 
 jobs:
   build:
