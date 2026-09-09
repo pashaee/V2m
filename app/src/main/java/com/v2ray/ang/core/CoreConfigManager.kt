@@ -85,14 +85,14 @@ object CoreConfigManager {
                   ],
                   "dns": {
                     "hosts": {
-                      "dns.adguard-dns.com": [
-                        "94.140.14.14",
-                        "94.140.15.15"
+                      "cloudflare-dns.com": [
+                        "1.1.1.1",
+                        "1.0.0.1"
                       ]
                     },
                     "servers": [
                       "fakedns",
-                      "https://dns.adguard-dns.com/dns-query"
+                      "https://cloudflare-dns.com/dns-query"
                     ],
                     "queryStrategy": "UseIPv4"
                   },
@@ -136,7 +136,7 @@ object CoreConfigManager {
                         "security": "tls",
                         "tlsSettings": {
                           "alpn": [
-                            "h2",
+                            
                             "http/1.1"
                           ],
                           "certificates": [
@@ -242,7 +242,7 @@ object CoreConfigManager {
                                 "delays": [
                                   "0"
                                 ],
-                                "maxSplit": "0"
+                                "maxSplit": "1"
                               }
                             },
                             {
@@ -295,8 +295,8 @@ object CoreConfigManager {
                       {
                         "type": "field",
                         "ip": [
-                          "94.140.14.14",
-                          "94.140.15.15"
+                          "1.1.1.1",
+                          "1.0.0.1"
                         ],
                         "outboundTag": "proxy"
                       },
