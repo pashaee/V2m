@@ -242,7 +242,7 @@ object CoreConfigManager {
                                 "delays": [
                                   "0"
                                 ],
-                                "maxSplit": "1"
+                                "maxSplit": "0"
                               }
                             },
                             {
