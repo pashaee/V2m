@@ -235,8 +235,8 @@ object CoreConfigManager {
                               "settings": {
                                 "packets": "tlshello",
                                 "lengths": [
-                                  "5",
-                                  "94",
+                                  "6",
+                                  "98",
                                   "1"
                                 ],
                                 "delays": [
@@ -250,13 +250,13 @@ object CoreConfigManager {
                               "settings": {
                                 "packets": "1-1",
                                 "lengths": [
-                                  "109",
+                                  "114",
                                   "1"
                                 ],
                                 "delays": [
                                   "1"
                                 ],
-                                "maxSplit": "355"
+                                "maxSplit": "11"
                               }
                             }
                           ]
