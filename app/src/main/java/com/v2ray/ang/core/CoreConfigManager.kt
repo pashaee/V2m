@@ -105,10 +105,9 @@ object CoreConfigManager {
                       "sniffing": {
                         "enabled": true,
                         "destOverride": [
+                          "fakedns",
                           "http",
-                          "tls",
-                          "quic",
-                          "fakedns"
+                          "tls"
                         ],
                         "routeOnly": false
                       },
@@ -117,57 +116,7 @@ object CoreConfigManager {
                         "udp": true,
                         "allowTransparent": false
                       }
-                    }$tunInboundJson,
-                    {
-                      "tag": "tls-decrypt-h211",
-                      "listen": "0.0.0.0",
-                      "port": 40444,
-                      "protocol": "tunnel",
-                      "settings": {
-                        "network": "tcp",
-                        "port": 443,
-                        "followRedirect": true
-                      },
-                      "streamSettings": {
-                        "sockopt": {
-                          "tcpKeepAliveInterval": 1,
-                          "tcpKeepAliveIdle": 11
-                        },
-                        "security": "tls",
-                        "tlsSettings": {
-                          "alpn": [
-                            
-                            "http/1.1"
-                          ],
-                          "certificates": [
-                            {
-                              "usage": "issue",
-                              "buildChain": true,
-                              "certificate": [
-                                "-----BEGIN CERTIFICATE-----",
-                                "MIIBozCCAUmgAwIBAgIQcEap9OyNauSbu9WIjBrE7DAKBggqhkjOPQQDAjAmMREw",
-                                "DwYDVQQKEwhYcmF5IEluYzERMA8GA1UEAxMIWHJheSBJbmMwIBcNMjYwODA3MTU0",
-                                "NjQ5WhgPMjE0MDA5MDUwODQ2NDlaMCYxETAPBgNVBAoTCFhyYXkgSW5jMREwDwYD",
-                                "VQQDEwhYcmF5IEluYzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPPO9mvAOSm9",
-                                "+zuukL9WsgyoczQimK2xxFfDHZOvGLq3TXiCNeVwTqiCBsqwx424yhUUT8rK8HPb",
-                                "WPAYDE6ttaujVzBVMA4GA1UdDwEB/wQEAwICpDATBgNVHSUEDDAKBggrBgEFBQcD",
-                                "ATAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBSqTVNjHBZAJhMgLyC57rMYUsSW",
-                                "jjAKBggqhkjOPQQDAgNIADBFAiBpvu+yogzeo7NqaXOiD+sHhC6E0RijO8ogkUX6",
-                                "2ebPhwIhAO2yiZfK22SOYSVmJ7BuMbkAn45WrglHsqz8p4J+DaLS",
-                                "-----END CERTIFICATE-----"
-                              ],
-                              "key": [
-                                "-----BEGIN EC PRIVATE KEY-----",
-                                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg35ZH25uH4yAEnemA",
-                                "w5EQ72jDwGq78+wT6iOxzbzWdFKhRANCAATzzvZrwDkpvfs7rpC/VrIMqHM0Ipit",
-                                "scRXwx2Trxi6t014gjXlcE6oggbKsMeNuMoVFE/KyvBz21jwGAxOrbWr",
-                                "-----END EC PRIVATE KEY-----"
-                              ]
-                            }
-                          ]
-                        }
-                      }
-                    }
+                    }$tunInboundJson
                   ],
                   "outbounds": [
                     {
@@ -176,8 +125,8 @@ object CoreConfigManager {
                       "settings": {
                         "vnext": [
                           {
-                            "address": "127.0.0.1",
-                            "port": 40444,
+                            "address": "$dynAddress",
+                            "port": $dynPort,
                             "users": [
                               {
                                 "id": "$dynUuid",
@@ -193,73 +142,19 @@ object CoreConfigManager {
                         "network": "ws",
                         "security": "tls",
                         "sockopt": {
-                        "tcpNoDelay": true,
-                        "tcpFastOpen": true
-                                    },
+                          "tcpNoDelay": true,
+                          "tcpFastOpen": true
+                        },
                         "tlsSettings": {
                           "serverName": "$dynSni",
                           "alpn": ["http/1.1"],
-                          "fingerprint": "ios",
-                          "pinnedPeerCertSha256": "3de5b7bd48c18c9ff057d8961f24c16555a7e387ebb509e1efb1315303695c82"
+                          "fingerprint": "unsafe"
                         },
                         "wsSettings": {
                           "path": "/",
                           "headers": {
                             "User-Agent": "edge"  
-                                      
                           }
-                        }
-                      }
-                    },
-                    {
-                      "tag": "tls-repack-frommitm",
-                      "protocol": "direct",
-                      "settings": {
-                        "redirect": "$dynAddress:$dynPort"
-                      },
-                      "streamSettings": {
-                        "security": "tls",
-                        "tlsSettings": {
-                          "serverName": "fromMitM",
-                          "verifyPeerCertByName": "fromMitM",
-                          "alpn": [
-                            "fromMitM"
-                          ],
-                          "fingerprint": "unsafe",
-                          "cipherSuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
-                        },
-                        "finalmask": {
-                          "tcp": [
-                            {
-                              "type": "fragment",
-                              "settings": {
-                                "packets": "tlshello",
-                                "lengths": [
-                                  "6",
-                                  "98",
-                                  "1"
-                                ],
-                                "delays": [
-                                  "0"
-                                ],
-                                "maxSplit": "0"
-                              }
-                            },
-                            {
-                              "type": "fragment",
-                              "settings": {
-                                "packets": "1-1",
-                                "lengths": [
-                                  "114",
-                                  "1"
-                                ],
-                                "delays": [
-                                  "1"
-                                ],
-                                "maxSplit": "11"
-                              }
-                            }
-                          ]
                         }
                       }
                     },
@@ -272,7 +167,10 @@ object CoreConfigManager {
                       "protocol": "freedom",
                       "streamSettings": {
                         "sockopt": {
-                          "domainStrategy": "UseIP"
+                          "happyEyeballs": {
+                            "tryDelayMs": 300,
+                            "maxConcurrentTry": 20
+                          }
                         }
                       }
                     },
@@ -301,12 +199,47 @@ object CoreConfigManager {
                         "outboundTag": "proxy"
                       },
                       {
-                        "type": "field",
-                        "inboundTag": [
-                          "tls-decrypt-h211"
-                        ],
-                        "outboundTag": "tls-repack-frommitm"
-                      },
+                              "type": "field",
+                              "outboundTag": "direct",
+                              "protocol": [
+                                "bittorrent"
+                              ]
+                            },
+                            {
+                              "type": "field",
+                              "outboundTag": "block",
+                              "domain": [
+                                "geosite:category-ads-all"
+                              ]
+                            },
+                            {
+                              "type": "field",
+                              "outboundTag": "direct",
+                              "ip": [
+                                "geoip:private"
+                              ]
+                            },
+                            {
+                              "type": "field",
+                              "outboundTag": "direct",
+                              "domain": [
+                                "geosite:private"
+                              ]
+                            },
+                            {
+                              "type": "field",
+                              "outboundTag": "direct",
+                              "domain": [
+                                "geosite:ir"
+                              ]
+                            },
+                            {
+                              "type": "field",
+                              "outboundTag": "direct",
+                              "ip": [
+                                "geoip:ir"
+                              ]
+                            },
                       {
                         "type": "field",
                         "outboundTag": "direct",
