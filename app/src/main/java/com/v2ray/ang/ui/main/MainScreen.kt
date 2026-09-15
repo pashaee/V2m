@@ -63,10 +63,18 @@ import com.v2ray.ang.R
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.extension.delay
 import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.ui.compose.QRCodeDialog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.URL
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -111,7 +119,6 @@ fun MainScreen(
     var locateInProgress by remember { mutableStateOf(false) }
 
     // --- استخراج نام و آی‌پی کانفیگ انتخاب شده ---
-    // با اضافه شدن کلید 'groups'، بلافاصله بعد از ذخیره ویرایش، اطلاعات این بخش به روز رسانی می‌شود
     val selectedProfile = remember(selectedGuid, groups) {
         MmkvManager.decodeServerConfig(selectedGuid ?: "")
     }
@@ -427,9 +434,51 @@ fun MainScreen(
 @Composable
 fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier = Modifier) {
     var secondsConnected by remember { mutableLongStateOf(0L) }
+    var locationText by remember { mutableStateOf("") }
 
     LaunchedEffect(isRunning) {
         if (isRunning) {
+            // واکشی لوکیشن با تزریق مستقیم درخواست به پورت پراکسی محلی Xray
+            launch {
+                var retryCount = 0
+                var isLocationFound = false
+
+                while (!isLocationFound && retryCount < 2 && isActive) {
+                    delay(2000) // زمان کوتاه برای اطمینان از آماده بودن Inbound
+                    try {
+                        val location = withContext(Dispatchers.IO) {
+                            // پیدا کردن پورت HTTP پویا یا ثابت برنامه
+                            val httpPort = SettingsManager.getHttpPort()
+                            // تنظیم صریح پراکسی محلی برای هدایت درخواست به داخل تونل Xray
+                            val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", httpPort))
+                            val url = URL("https://api.ip.sb/geoip")
+
+                            val connection = url.openConnection(proxy) as HttpURLConnection
+                            connection.requestMethod = "GET"
+                            connection.connectTimeout = 5000
+                            connection.readTimeout = 5000
+
+                            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                                val jsonObject = JSONObject(response)
+                                jsonObject.optString("country", "Unknown")
+                            } else {
+                                "Failed"
+                            }
+                        }
+
+                        if (location.isNotEmpty() && location != "Failed" && location != "Unknown") {
+                            locationText = "Location: $location"
+                            isLocationFound = true
+                        } else {
+                            retryCount++
+                        }
+                    } catch (e: Exception) {
+                        retryCount++
+                    }
+                }
+            }
+
             while (isActive) {
                 // خواندن زمان استارت از دیتابیس به صورت متن و تبدیل به عدد
                 val startTimeStr = com.v2ray.ang.handler.MmkvManager.decodeSettingsString("v2m_start_time")
@@ -441,10 +490,11 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
                 } else {
                     secondsConnected = 0L
                 }
-                delay(1000)
+                kotlinx.coroutines.delay(1000)
             }
         } else {
             secondsConnected = 0L
+            locationText = "" // ریست کردن لوکیشن در صورت قطع ارتباط
         }
     }
 
@@ -490,6 +540,15 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
                 if (pingText.isNotEmpty()) {
                     Text(
                         text = pingText,
+                        color = Color(0xFFB0B0B0),
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                // المان جدید برای نمایش لوکیشن
+                if (locationText.isNotEmpty()) {
+                    Text(
+                        text = locationText,
                         color = Color(0xFFB0B0B0),
                         fontSize = 13.sp,
                         modifier = Modifier.padding(top = 4.dp)

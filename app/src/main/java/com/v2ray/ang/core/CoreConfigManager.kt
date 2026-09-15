@@ -117,6 +117,22 @@ object CoreConfigManager {
                         "udp": true,
                         "allowTransparent": false
                       }
+                    },
+                    {
+                      "tag": "http-local",
+                      "port": 10809,
+                      "listen": "127.0.0.1",
+                      "protocol": "http",
+                      "sniffing": {
+                        "enabled": true,
+                        "destOverride": [
+                          "http",
+                          "tls"
+                        ]
+                      },
+                      "settings": {
+                        "allowTransparent": false
+                      }
                     }$tunInboundJson,
                     {
                       "tag": "tls-decrypt-h211",
@@ -254,7 +270,8 @@ object CoreConfigManager {
                       {
                         "inboundTag": [
                           "socks",
-                          "tun"
+                          "tun",
+                          "http-local"
                         ],
                         "port": 53,
                         "outboundTag": "dns-out"
