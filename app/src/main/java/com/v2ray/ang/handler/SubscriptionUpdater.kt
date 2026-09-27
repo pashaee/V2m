@@ -113,10 +113,8 @@ object SubscriptionUpdater {
             return
         }
 
-        val intervalMinutes = maxOf(
-            AppConfig.SUBSCRIPTION_MIN_INTERVAL_MINUTES,
-            subItem.updateInterval
-        )
+        // --- تغییر اختصاصی شما: تنظیم ثابتِ زمانِ آپدیت روی ۲ ساعت (۱۲۰ دقیقه) ---
+        val intervalMinutes = 120L
 
         // Base initial delay on the last successful update time persisted in subscription.
         val lastUpdated = subItem.lastUpdated
