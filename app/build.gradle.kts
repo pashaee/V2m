@@ -12,7 +12,7 @@ android {
 
     defaultConfig {
         applicationId = "com.v2m.app"
-        minSdk = 24
+        minSdk = 29
         targetSdk = 37
         versionCode = 745
         versionName = "1.0.0"
