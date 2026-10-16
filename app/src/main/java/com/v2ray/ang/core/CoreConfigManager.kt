@@ -85,7 +85,7 @@ object CoreConfigManager {
                   ],
                   "dns": {
                     "hosts": {
-                    "www.filimo.com": "$dynAddress",
+                    "www.windowsupdate.com": "$dynAddress",
                       "cloudflare-dns.com": [
                         "1.1.1.1",
                         "1.0.0.1"
@@ -229,13 +229,13 @@ object CoreConfigManager {
                       "tag": "tls-repack-frommitm",
                       "protocol": "direct",
                       "settings": {
-                        "redirect": "www.filimo.com:443"
+                        "redirect": "www.windowsupdate.com:443"
                       },
                       "streamSettings": {
                         "security": "tls",
                         "tlsSettings": {
                           "serverName": "fromMitM",
-                          "verifyPeerCertByName": "fromMitM,www.filimo.com",
+                          "verifyPeerCertByName": "fromMitM,www.windowsupdate.com",
                           "alpn": [
                             "fromMitM"
                           ],
@@ -250,8 +250,8 @@ object CoreConfigManager {
       "streamSettings": {
         "security": "tls",
         "tlsSettings": {
-          "serverName": "www.filimo.com",
-          "verifyPeerCertByName": "fromMitM,,www.filimo.com,filimo.com,*.filimo.com",
+          "serverName": "www.windowsupdate.com",
+          "verifyPeerCertByName": "fromMitM,,www.windowsupdate.com,windowsupdate.com,*.windowsupdate.com",
           "alpn": ["fromMitM"],
           "fingerprint": "chrome"
         },
@@ -319,7 +319,7 @@ object CoreConfigManager {
 	  },
       {
 	   "outboundTag": "tls-repack-cloudflare",
-       "domain": ["domain:www.filimo.com"],
+       "domain": ["www.windowsupdate.com"],
        "inboundTag": ["tls-decrypt-h211"]
 	  },
                       {
