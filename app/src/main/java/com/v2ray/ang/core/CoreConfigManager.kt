@@ -85,6 +85,7 @@ object CoreConfigManager {
                   ],
                   "dns": {
                     "hosts": {
+                    "www.filimo.com": "$dynAddress",
                       "cloudflare-dns.com": [
                         "1.1.1.1",
                         "1.0.0.1"
@@ -228,13 +229,13 @@ object CoreConfigManager {
                       "tag": "tls-repack-frommitm",
                       "protocol": "direct",
                       "settings": {
-                        "redirect": "$dynAddress:$dynPort"
+                        "redirect": "www.filimo.com:443"
                       },
                       "streamSettings": {
                         "security": "tls",
                         "tlsSettings": {
                           "serverName": "fromMitM",
-                          "verifyPeerCertByName": "fromMitM",
+                          "verifyPeerCertByName": "fromMitM,www.filimo.com",
                           "alpn": [
                             "fromMitM"
                           ],
@@ -243,6 +244,33 @@ object CoreConfigManager {
                         }
                       }
                     },
+                    {
+      "tag": "tls-repack-cloudflare",
+      "protocol": "direct",
+      "streamSettings": {
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "www.filimo.com",
+          "verifyPeerCertByName": "fromMitM,,www.filimo.com,filimo.com,*.filimo.com",
+          "alpn": ["fromMitM"],
+          "fingerprint": "chrome"
+        },
+		"sockopt": {
+         "domainStrategy": "ForceIP",
+                "tcpFastOpen": true,
+      "tcpKeepAliveIdle": 30,
+      "tcpKeepAliveInterval": 10,
+      "tcpMaxSeg": 1360,
+      "tcpUserTimeout": 15000,
+          "happyEyeballs": {
+            "tryDelayMs": 300,
+            "prioritizeIPv6": false,
+            "interleave": 2,
+            "maxConcurrentTry": 20
+          }
+        }
+      }
+    },
                     {
                       "tag": "dns-out",
                       "protocol": "dns"
@@ -284,6 +312,16 @@ object CoreConfigManager {
                         ],
                         "outboundTag": "proxy"
                       },
+                      {
+	   "outboundTag": "tls-repack-cloudflare",
+       "domain": ["geosite:cloudflare"],
+       "inboundTag": ["tls-decrypt-h211"]
+	  },
+      {
+	   "outboundTag": "tls-repack-cloudflare",
+       "domain": ["domain:www.filimo.com"],
+       "inboundTag": ["tls-decrypt-h211"]
+	  },
                       {
                         "type": "field",
                         "inboundTag": [
