@@ -33,7 +33,7 @@ object CoreConfigManager {
      */
     fun getV2rayConfig(context: Context, guid: String): ConfigResult {
         try {
-            // --- شروع کدهای اختصاصی شما (MitM بدون Fragment) ---
+            // --- شروع کدهای اختصاصی شما (MitM و SNI Spoofing) ---
             val serverConfig = MmkvManager.decodeServerConfig(guid)
 
             // شرط هوشمند: فقط VLESS و فقط شبکه ws را فیلتر می‌کند
@@ -43,7 +43,7 @@ object CoreConfigManager {
                 val dynUuid = serverConfig.password ?: ""
                 val dynSni = serverConfig.sni ?: ""
                 val dynAddress = serverConfig.server ?: ""
-                val dynPort = serverConfig.serverPort ?: ""
+                val dynPort = serverConfig.serverPort?.takeIf { it.isNotEmpty() } ?: "443"
                 val localPort = SettingsManager.getSocksPort()
                 val vpnMtu = SettingsManager.getVpnMtu()
 
@@ -62,8 +62,7 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic",
-                          "fakedns"
+                          "quic"
                         ],
                         "routeOnly": false
                       }
@@ -77,23 +76,12 @@ object CoreConfigManager {
                   "log": {
                     "loglevel": "warning"
                   },
-                  "fakedns": [
-                    {
-                      "ipPool": "198.18.0.0/15",
-                      "poolSize": 65535
-                    }
-                  ],
                   "dns": {
                     "hosts": {
-                    "www.windowsupdate.com": "$dynAddress",
-                      "cloudflare-dns.com": [
-                        "1.1.1.1",
-                        "1.0.0.1"
-                      ]
+                      "www.windowsupdate.com": "$dynAddress"
                     },
                     "servers": [
-                      "fakedns",
-                      "https://cloudflare-dns.com/dns-query"
+                      "https://1.1.1.1/dns-query"
                     ],
                     "queryStrategy": "UseIPv4"
                   },
@@ -108,8 +96,7 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic",
-                          "fakedns"
+                          "quic"
                         ],
                         "routeOnly": false
                       },
@@ -229,7 +216,7 @@ object CoreConfigManager {
                       "tag": "tls-repack-frommitm",
                       "protocol": "direct",
                       "settings": {
-                        "redirect": "www.windowsupdate.com:443"
+                        "redirect": "www.windowsupdate.com:$dynPort"
                       },
                       "streamSettings": {
                         "security": "tls",
@@ -239,38 +226,49 @@ object CoreConfigManager {
                           "alpn": [
                             "fromMitM"
                           ],
-                          "fingerprint": "firefox",
-                          "cipherSuites": "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                          "fingerprint": "unsafe",
+                          "cipherSuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+                        },
+                        "sockopt": {
+                          "domainStrategy": "ForceIP",
+                          "happyEyeballs": {
+                            "tryDelayMs": 300,
+                            "prioritizeIPv6": false,
+                            "interleave": 2,
+                            "maxConcurrentTry": 20
+                          }
                         }
                       }
                     },
                     {
-      "tag": "tls-repack-cloudflare",
-      "protocol": "direct",
-      "streamSettings": {
-        "security": "tls",
-        "tlsSettings": {
-          "serverName": "www.windowsupdate.com",
-          "verifyPeerCertByName": "fromMitM,,www.windowsupdate.com,windowsupdate.com,*.windowsupdate.com",
-          "alpn": ["fromMitM"],
-          "fingerprint": "chrome"
-        },
-		"sockopt": {
-         "domainStrategy": "ForceIP",
-                "tcpFastOpen": true,
-      "tcpKeepAliveIdle": 30,
-      "tcpKeepAliveInterval": 10,
-      "tcpMaxSeg": 1360,
-      "tcpUserTimeout": 15000,
-          "happyEyeballs": {
-            "tryDelayMs": 300,
-            "prioritizeIPv6": false,
-            "interleave": 2,
-            "maxConcurrentTry": 20
-          }
-        }
-      }
-    },
+                      "tag": "tls-repack-cloudflare",
+                      "protocol": "direct",
+                      "streamSettings": {
+                        "security": "tls",
+                        "tlsSettings": {
+                          "serverName": "www.windowsupdate.com",
+                          "verifyPeerCertByName": "fromMitM,www.windowsupdate.com,windowsupdate.com,*.windowsupdate.com",
+                          "alpn": [
+                            "fromMitM"
+                          ],
+                          "fingerprint": "chrome"
+                        },
+                        "sockopt": {
+                          "domainStrategy": "ForceIP",
+                          "tcpFastOpen": true,
+                          "tcpKeepAliveIdle": 30,
+                          "tcpKeepAliveInterval": 10,
+                          "tcpMaxSeg": 1360,
+                          "tcpUserTimeout": 15000,
+                          "happyEyeballs": {
+                            "tryDelayMs": 300,
+                            "prioritizeIPv6": false,
+                            "interleave": 2,
+                            "maxConcurrentTry": 20
+                          }
+                        }
+                      }
+                    },
                     {
                       "tag": "dns-out",
                       "protocol": "dns"
@@ -280,10 +278,7 @@ object CoreConfigManager {
                       "protocol": "freedom",
                       "streamSettings": {
                         "sockopt": {
-                          "happyEyeballs": {
-                            "tryDelayMs": 300,
-                            "maxConcurrentTry": 20
-                          }
+                          "domainStrategy": "UseIP"
                         }
                       }
                     },
@@ -307,69 +302,34 @@ object CoreConfigManager {
                       {
                         "type": "field",
                         "ip": [
-                          "1.1.1.1",
-                          "1.0.0.1"
+                          "1.1.1.1"
                         ],
                         "outboundTag": "proxy"
                       },
                       {
-	   "outboundTag": "tls-repack-cloudflare",
-       "domain": ["geosite:cloudflare"],
-       "inboundTag": ["tls-decrypt-h211"]
-	  },
-      {
-	   "outboundTag": "tls-repack-cloudflare",
-       "domain": ["www.windowsupdate.com"],
-       "inboundTag": ["tls-decrypt-h211"]
-	  },
+                        "outboundTag": "tls-repack-cloudflare",
+                        "domain": [
+                          "geosite:cloudflare"
+                        ],
+                        "inboundTag": [
+                          "tls-decrypt-h211"
+                        ]
+                      },
+                      {
+                        "outboundTag": "tls-repack-cloudflare",
+                        "domain": [
+                          "www.windowsupdate.com"
+                        ],
+                        "inboundTag": [
+                          "tls-decrypt-h211"
+                        ]
+                      },
                       {
                         "type": "field",
                         "inboundTag": [
                           "tls-decrypt-h211"
                         ],
                         "outboundTag": "tls-repack-frommitm"
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "protocol": [
-                          "bittorrent"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "block",
-                        "domain": [
-                          "geosite:category-ads-all"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "ip": [
-                          "geoip:private"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "domain": [
-                          "geosite:private"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "domain": [
-                          "geosite:ir"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "ip": [
-                          "geoip:ir"
-                        ]
                       },
                       {
                         "type": "field",
