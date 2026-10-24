@@ -33,19 +33,73 @@ object CoreConfigManager {
      */
     fun getV2rayConfig(context: Context, guid: String): ConfigResult {
         try {
-            // --- شروع کدهای اختصاصی شما (MitM و SNI Spoofing) ---
+            // --- شروع کدهای اختصاصی شما (پشتیبانی از VLESS + TLS روی ws, xhttp, httpupgrade) ---
             val serverConfig = MmkvManager.decodeServerConfig(guid)
+            val supportedNetworks = setOf("ws", "xhttp", "httpupgrade")
 
-            // شرط هوشمند: فقط VLESS و فقط شبکه ws را فیلتر می‌کند
-            if (serverConfig != null && serverConfig.configType == EConfigType.VLESS && serverConfig.network == "ws") {
-
-                // استخراج متغیرهای پایه
+            // شرط هوشمند: فقط VLESS با امنیت TLS و شبکه‌های ws, xhttp, httpupgrade
+            if (serverConfig != null &&
+                serverConfig.configType == EConfigType.VLESS &&
+                serverConfig.security.equals(AppConfig.TLS, ignoreCase = true) &&
+                serverConfig.network in supportedNetworks
+            ) {
+                val network = serverConfig.network ?: "ws"
                 val dynUuid = serverConfig.password ?: ""
-                val dynSni = serverConfig.sni ?: ""
                 val dynAddress = serverConfig.server ?: ""
                 val dynPort = serverConfig.serverPort?.takeIf { it.isNotEmpty() } ?: "443"
+                val dynHost = serverConfig.host?.takeIf { it.isNotEmpty() }
+                    ?: serverConfig.sni?.takeIf { it.isNotEmpty() }
+                    ?: dynAddress
+                val dynSni = serverConfig.sni?.takeIf { it.isNotEmpty() } ?: dynHost
+                val dynPath = serverConfig.path?.takeIf { it.isNotEmpty() } ?: "/"
                 val localPort = SettingsManager.getSocksPort()
                 val vpnMtu = SettingsManager.getVpnMtu()
+
+                // تنظیم ALPN متناسب با نوع شبکه (h2 برای xhttp و http/1.1 برای ws/httpupgrade)
+                val alpnJson = if (network == "xhttp") {
+                    """"h2", "http/1.1""""
+                } else {
+                    """"http/1.1""""
+                }
+
+                // ساخت اختصاصی تنظیمات هر پروتکل انتقال
+                val transportSettingsJson = when (network) {
+                    "ws" -> """
+                        "wsSettings": {
+                          "path": "$dynPath",
+                          "headers": {
+                            "Host": "$dynHost",
+                            "User-Agent": "edge"
+                          }
+                        }
+                    """.trimIndent()
+
+                    "httpupgrade" -> """
+                        "httpupgradeSettings": {
+                          "path": "$dynPath",
+                          "host": "$dynHost"
+                        }
+                    """.trimIndent()
+
+                    "xhttp" -> {
+                        val xhttpMode = serverConfig.xhttpMode?.takeIf { it.isNotEmpty() } ?: "auto"
+                        val extraRaw = serverConfig.xhttpExtra?.trim()
+                        val extraJson = if (!extraRaw.isNullOrEmpty() && JsonUtil.parseString(extraRaw) != null) {
+                            """,
+                          "extra": $extraRaw"""
+                        } else ""
+
+                        """
+                        "xhttpSettings": {
+                          "path": "$dynPath",
+                          "host": "$dynHost",
+                          "mode": "$xhttpMode"$extraJson
+                        }
+                        """.trimIndent()
+                    }
+
+                    else -> ""
+                }
 
                 // بررسی هوشمندانه برای نیاز به ساخت TUN در داخل Xray
                 val needTunInbound = SettingsManager.isVpnMode() && !SettingsManager.isUsingHevTun()
@@ -62,7 +116,8 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic"
+                          "quic",
+                          "fakedns"
                         ],
                         "routeOnly": false
                       }
@@ -72,18 +127,29 @@ object CoreConfigManager {
 
                 val customJson = """
                 {
-                  "remarks": "کانفیگ اختصاصی شما",
+                  "remarks": "${serverConfig.remarks.ifEmpty { "کانفیگ اختصاصی شما" }}",
                   "log": {
                     "loglevel": "warning"
                   },
+                  "fakedns": [
+                    {
+                      "ipPool": "198.18.0.0/15",
+                      "poolSize": 65535
+                    }
+                  ],
                   "dns": {
                     "hosts": {
-                      "www.windowsupdate.com": "$dynAddress"
+                      "cloudflare-dns.com": [
+                        "1.1.1.1",
+                        "1.0.0.1"
+                      ]
                     },
                     "servers": [
+                      "fakedns",
                       "https://1.1.1.1/dns-query"
                     ],
-                    "queryStrategy": "UseIPv4"
+                    "queryStrategy": "UseIPv4",
+                    "tag": "dns-module"
                   },
                   "inbounds": [
                     {
@@ -96,7 +162,8 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic"
+                          "quic",
+                          "fakedns"
                         ],
                         "routeOnly": false
                       },
@@ -115,63 +182,14 @@ object CoreConfigManager {
                         "enabled": true,
                         "destOverride": [
                           "http",
-                          "tls"
+                          "tls",
+                          "fakedns"
                         ]
                       },
                       "settings": {
                         "allowTransparent": false
                       }
-                    }$tunInboundJson,
-                    {
-                      "tag": "tls-decrypt-h211",
-                      "listen": "0.0.0.0",
-                      "port": 40444,
-                      "protocol": "tunnel",
-                      "settings": {
-                        "network": "tcp",
-                        "port": 443,
-                        "followRedirect": true
-                      },
-                      "streamSettings": {
-                        "sockopt": {
-                          "tcpKeepAliveInterval": 1,
-                          "tcpKeepAliveIdle": 11
-                        },
-                        "security": "tls",
-                        "tlsSettings": {
-                          "alpn": [
-                            "h2",
-                            "http/1.1"
-                          ],
-                          "certificates": [
-                            {
-                              "usage": "issue",
-                              "buildChain": true,
-                              "certificate": [
-                                "-----BEGIN CERTIFICATE-----",
-                                "MIIBozCCAUmgAwIBAgIQcEap9OyNauSbu9WIjBrE7DAKBggqhkjOPQQDAjAmMREw",
-                                "DwYDVQQKEwhYcmF5IEluYzERMA8GA1UEAxMIWHJheSBJbmMwIBcNMjYwODA3MTU0",
-                                "NjQ5WhgPMjE0MDA5MDUwODQ2NDlaMCYxETAPBgNVBAoTCFhyYXkgSW5jMREwDwYD",
-                                "VQQDEwhYcmF5IEluYzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPPO9mvAOSm9",
-                                "+zuukL9WsgyoczQimK2xxFfDHZOvGLq3TXiCNeVwTqiCBsqwx424yhUUT8rK8HPb",
-                                "WPAYDE6ttaujVzBVMA4GA1UdDwEB/wQEAwICpDATBgNVHSUEDDAKBggrBgEFBQcD",
-                                "ATAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBSqTVNjHBZAJhMgLyC57rMYUsSW",
-                                "jjAKBggqhkjOPQQDAgNIADBFAiBpvu+yogzeo7NqaXOiD+sHhC6E0RijO8ogkUX6",
-                                "2ebPhwIhAO2yiZfK22SOYSVmJ7BuMbkAn45WrglHsqz8p4J+DaLS",
-                                "-----END CERTIFICATE-----"
-                              ],
-                              "key": [
-                                "-----BEGIN EC PRIVATE KEY-----",
-                                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg35ZH25uH4yAEnemA",
-                                "w5EQ72jDwGq78+wT6iOxzbzWdFKhRANCAATzzvZrwDkpvfs7rpC/VrIMqHM0Ipit",
-                                "scRXwx2Trxi6t014gjXlcE6oggbKsMeNuMoVFE/KyvBz21jwGAxOrbWr",
-                                "-----END EC PRIVATE KEY-----"
-                              ]
-                            }
-                          ]
-                        }
-                      }
-                    }
+                    }$tunInboundJson
                   ],
                   "outbounds": [
                     {
@@ -180,8 +198,8 @@ object CoreConfigManager {
                       "settings": {
                         "vnext": [
                           {
-                            "address": "127.0.0.1",
-                            "port": 40444,
+                            "address": "$dynAddress",
+                            "port": $dynPort,
                             "users": [
                               {
                                 "id": "$dynUuid",
@@ -194,79 +212,17 @@ object CoreConfigManager {
                         ]
                       },
                       "streamSettings": {
-                        "network": "ws",
+                        "network": "$network",
                         "security": "tls",
                         "tlsSettings": {
                           "serverName": "$dynSni",
                           "alpn": [
-                            "http/1.1"
-                          ],
-                          "fingerprint": "ios",
-                          "pinnedPeerCertSha256": "3de5b7bd48c18c9ff057d8961f24c16555a7e387ebb509e1efb1315303695c82"
-                        },
-                        "wsSettings": {
-                          "path": "/",
-                          "headers": {
-                            "User-Agent": "edge"
-                          }
-                        }
-                      }
-                    },
-                    {
-                      "tag": "tls-repack-frommitm",
-                      "protocol": "direct",
-                      "settings": {
-                        "redirect": "www.windowsupdate.com:$dynPort"
-                      },
-                      "streamSettings": {
-                        "security": "tls",
-                        "tlsSettings": {
-                          "serverName": "fromMitM",
-                          "verifyPeerCertByName": "fromMitM,www.windowsupdate.com",
-                          "alpn": [
-                            "fromMitM"
+                            $alpnJson
                           ],
                           "fingerprint": "unsafe",
                           "cipherSuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
                         },
-                        "sockopt": {
-                          "domainStrategy": "ForceIP",
-                          "happyEyeballs": {
-                            "tryDelayMs": 300,
-                            "prioritizeIPv6": false,
-                            "interleave": 2,
-                            "maxConcurrentTry": 20
-                          }
-                        }
-                      }
-                    },
-                    {
-                      "tag": "tls-repack-cloudflare",
-                      "protocol": "direct",
-                      "streamSettings": {
-                        "security": "tls",
-                        "tlsSettings": {
-                          "serverName": "www.windowsupdate.com",
-                          "verifyPeerCertByName": "fromMitM,www.windowsupdate.com,windowsupdate.com,*.windowsupdate.com",
-                          "alpn": [
-                            "fromMitM"
-                          ],
-                          "fingerprint": "chrome"
-                        },
-                        "sockopt": {
-                          "domainStrategy": "ForceIP",
-                          "tcpFastOpen": true,
-                          "tcpKeepAliveIdle": 30,
-                          "tcpKeepAliveInterval": 10,
-                          "tcpMaxSeg": 1360,
-                          "tcpUserTimeout": 15000,
-                          "happyEyeballs": {
-                            "tryDelayMs": 300,
-                            "prioritizeIPv6": false,
-                            "interleave": 2,
-                            "maxConcurrentTry": 20
-                          }
-                        }
+                        $transportSettingsJson
                       }
                     },
                     {
@@ -291,6 +247,7 @@ object CoreConfigManager {
                     "domainStrategy": "IPIfNonMatch",
                     "rules": [
                       {
+                        "type": "field",
                         "inboundTag": [
                           "socks",
                           "tun",
@@ -301,42 +258,72 @@ object CoreConfigManager {
                       },
                       {
                         "type": "field",
-                        "ip": [
-                          "1.1.1.1"
+                        "inboundTag": [
+                          "dns-module"
                         ],
                         "outboundTag": "proxy"
                       },
                       {
-                        "outboundTag": "tls-repack-cloudflare",
-                        "domain": [
-                          "geosite:cloudflare"
+                        "type": "field",
+                        "ip": [
+                          "1.1.1.1",
+                          "1.0.0.1"
                         ],
-                        "inboundTag": [
-                          "tls-decrypt-h211"
-                        ]
+                        "outboundTag": "proxy"
                       },
                       {
-                        "outboundTag": "tls-repack-cloudflare",
-                        "domain": [
-                          "www.windowsupdate.com"
-                        ],
-                        "inboundTag": [
-                          "tls-decrypt-h211"
+                        "type": "field",
+                        "network": "udp",
+                        "port": 443,
+                        "outboundTag": "block"
+                      },
+                      {
+                        "type": "field",
+                        "outboundTag": "direct",
+                        "protocol": [
+                          "bittorrent"
                         ]
                       },
                       {
                         "type": "field",
-                        "inboundTag": [
-                          "tls-decrypt-h211"
-                        ],
-                        "outboundTag": "tls-repack-frommitm"
+                        "outboundTag": "block",
+                        "domain": [
+                          "geosite:category-ads-all"
+                        ]
+                      },
+                      {
+                        "type": "field",
+                        "outboundTag": "direct",
+                        "ip": [
+                          "geoip:private"
+                        ]
                       },
                       {
                         "type": "field",
                         "outboundTag": "direct",
                         "domain": [
+                          "geosite:private"
+                        ]
+                      },
+                      {
+                        "type": "field",
+                        "outboundTag": "direct",
+                        "domain": [
+                          "geosite:ir",
                           "domain:.ir"
                         ]
+                      },
+                      {
+                        "type": "field",
+                        "outboundTag": "direct",
+                        "ip": [
+                          "geoip:ir"
+                        ]
+                      },
+                      {
+                        "type": "field",
+                        "network": "tcp,udp",
+                        "outboundTag": "proxy"
                       }
                     ]
                   }
