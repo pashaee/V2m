@@ -1,9 +1,18 @@
 package com.v2ray.ang.ui.main
 
+import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -51,8 +60,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -435,10 +449,12 @@ fun MainScreen(
 fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier = Modifier) {
     var secondsConnected by remember { mutableLongStateOf(0L) }
     var locationText by remember { mutableStateOf("") }
+    var countryCode by remember { mutableStateOf("") }
+    var flagBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
 
     LaunchedEffect(isRunning) {
         if (isRunning) {
-            // واکشی لوکیشن با تزریق مستقیم درخواست به پورت پراکسی محلی Xray
+            // واکشی لوکیشن و تصویر گرافیکی پرچم با تزریق مستقیم درخواست به پورت پراکسی محلی Xray
             launch {
                 var retryCount = 0
                 var isLocationFound = false
@@ -446,10 +462,8 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
                 while (!isLocationFound && retryCount < 2 && isActive) {
                     delay(2000) // زمان کوتاه برای اطمینان از آماده بودن Inbound
                     try {
-                        val location = withContext(Dispatchers.IO) {
-                            // پیدا کردن پورت HTTP پویا یا ثابت برنامه
+                        val result = withContext(Dispatchers.IO) {
                             val httpPort = SettingsManager.getHttpPort()
-                            // تنظیم صریح پراکسی محلی برای هدایت درخواست به داخل تونل Xray
                             val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", httpPort))
                             val url = URL("https://api.ip.sb/geoip")
 
@@ -461,14 +475,37 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
                             if (connection.responseCode == HttpURLConnection.HTTP_OK) {
                                 val response = connection.inputStream.bufferedReader().use { it.readText() }
                                 val jsonObject = JSONObject(response)
-                                jsonObject.optString("country", "Unknown")
+                                val country = jsonObject.optString("country", "Unknown")
+                                val code = jsonObject.optString("country_code", "").uppercase()
+
+                                // دانلود تصویر گرافیکی پرچم از طریق همان پراکسی محلی
+                                val downloadedFlag = if (code.length == 2) {
+                                    try {
+                                        val flagUrl = URL("https://flagcdn.com/w80/${code.lowercase()}.png")
+                                        val flagConn = flagUrl.openConnection(proxy) as HttpURLConnection
+                                        flagConn.connectTimeout = 4000
+                                        flagConn.readTimeout = 4000
+                                        if (flagConn.responseCode == HttpURLConnection.HTTP_OK) {
+                                            flagConn.inputStream.use { stream ->
+                                                BitmapFactory.decodeStream(stream)?.asImageBitmap()
+                                            }
+                                        } else null
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+                                } else null
+
+                                Triple(country, code, downloadedFlag)
                             } else {
-                                "Failed"
+                                Triple("Failed", "", null)
                             }
                         }
 
+                        val (location, code, downloadedFlag) = result
                         if (location.isNotEmpty() && location != "Failed" && location != "Unknown") {
                             locationText = "Location: $location"
+                            countryCode = code
+                            flagBitmap = downloadedFlag
                             isLocationFound = true
                         } else {
                             retryCount++
@@ -494,7 +531,9 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
             }
         } else {
             secondsConnected = 0L
-            locationText = "" // ریست کردن لوکیشن در صورت قطع ارتباط
+            locationText = ""
+            countryCode = ""
+            flagBitmap = null
         }
     }
 
@@ -545,62 +584,253 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
-                // المان جدید برای نمایش لوکیشن
+                // نمایش نام کشور به همراه پرچم گرافیکی و انیمیشنی در جلوی آن
                 if (locationText.isNotEmpty()) {
-                    Text(
-                        text = locationText,
-                        color = Color(0xFFB0B0B0),
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(top = 6.dp)
+                    ) {
+                        Text(
+                            text = locationText,
+                            color = Color(0xFFB0B0B0),
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        AnimatedCountryFlag(
+                            countryCode = countryCode,
+                            flagBitmap = flagBitmap
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+/**
+ * کامپوننت نمایش گرافیکی پرچم کشور به همراه افکت انیمیشنی اهتزاز سه‌بعدی، موج نوری و هاله ضربان‌دار
+ */
 @Composable
-fun CenterMagicButton(isRunning: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val limeGreen = Color(0xFFC6F044)
-    val darkGray = Color(0xFF222222)
-    val lightGray = Color(0xFF333333)
+fun AnimatedCountryFlag(
+    countryCode: String,
+    flagBitmap: ImageBitmap?,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "flagWaveTransition")
 
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+    // ۱. انیمیشن چرخش و اهتزاز سه‌بعدی پرچم
+    val waveRotationY by infiniteTransition.animateFloat(
+        initialValue = -14f,
+        targetValue = 14f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "waveRotationY"
+    )
 
-        if (isRunning) {
+    val waveRotationZ by infiniteTransition.animateFloat(
+        initialValue = -2.5f,
+        targetValue = 2.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "waveRotationZ"
+    )
+
+    // ۲. حرکت شناور عمودی نرم
+    val floatOffsetY by infiniteTransition.animateFloat(
+        initialValue = -1.5f,
+        targetValue = 1.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "floatOffsetY"
+    )
+
+    // ۳. موج نوری متحرک روی سطح پرچم (شبیه‌سازی تابش نور روی پارچه در حال اهتزاز)
+    val shimmerOffset by infiniteTransition.animateFloat(
+        initialValue = -40f,
+        targetValue = 80f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmerOffset"
+    )
+
+    // ۴. ضربان هاله نئونی دور پرچم
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 0.65f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowAlpha"
+    )
+
+    val neonGreen = Color(0xFFC6F044)
+    val flagEmoji = remember(countryCode) { countryCodeToFlagEmoji(countryCode) }
+
+    Box(
+        modifier = modifier.size(width = 34.dp, height = 24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        // هاله نوری پشت پرچم
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            neonGreen.copy(alpha = glowAlpha * 0.45f),
+                            Color.Transparent
+                        )
+                    ),
+                    shape = RoundedCornerShape(6.dp)
+                )
+        )
+
+        // قاب اصلی پرچم با افکت حرکت سه‌بعدی
+        Box(
+            modifier = Modifier
+                .size(width = 26.dp, height = 18.dp)
+                .graphicsLayer {
+                    rotationY = waveRotationY
+                    rotationZ = waveRotationZ
+                    translationY = floatOffsetY
+                    cameraDistance = 8f * density
+                }
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xFF1A1F1A))
+                .border(
+                    width = 1.dp,
+                    color = neonGreen.copy(alpha = glowAlpha),
+                    shape = RoundedCornerShape(4.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (flagBitmap != null) {
+                Image(
+                    bitmap = flagBitmap,
+                    contentDescription = "Country Flag",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    text = flagEmoji,
+                    fontSize = 13.sp
+                )
+            }
+
+            // لایه موج نوری و سایه‌روشن اهتزاز روی پرچم
             Box(
                 modifier = Modifier
-                    .size(280.dp)
+                    .fillMaxSize()
                     .background(
-                        brush = Brush.radialGradient(
-                            colors = listOf(limeGreen.copy(alpha = 0.25f), Color.Transparent)
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.28f),
+                                Color.Black.copy(alpha = 0.18f),
+                                Color.Transparent
+                            ),
+                            start = Offset(shimmerOffset, 0f),
+                            end = Offset(shimmerOffset + 24f, 20f)
                         )
                     )
             )
         }
+    }
+}
 
+/**
+ * تبدیل کد دوحرفی کشور (ISO 3166-1 alpha-2) به کاراکتر گرافیکی پرچم
+ */
+private fun countryCodeToFlagEmoji(countryCode: String): String {
+    val cleanCode = countryCode.trim().uppercase()
+    if (cleanCode.length != 2 || !cleanCode[0].isLetter() || !cleanCode[1].isLetter()) {
+        return "🌐"
+    }
+    val firstChar = Character.codePointAt(cleanCode, 0) - 0x41 + 0x1F1E6
+    val secondChar = Character.codePointAt(cleanCode, 1) - 0x41 + 0x1F1E6
+    return String(Character.toChars(firstChar)) + String(Character.toChars(secondChar))
+}
+
+@Composable
+fun CenterMagicButton(isRunning: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    // رنگ‌های پایه با تم سبز لیمویی برنامه شما
+    val neonGreen = Color(0xFFC6F044)
+    val brightHighlight = Color(0xFFF2FFCC)
+    val midGreen = Color(0xFF689F38)
+    val darkCoreCenter = if (isRunning) Color(0xFF162410) else Color(0xFF101612)
+    val darkCoreEdge = Color(0xFF070A08)
+
+    // تنظیم شدت شفافیت بر اساس وضعیت اتصال
+    val activeAlpha = if (isRunning) 1f else 0.45f
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+
+        // ۱. هاله نوری پس‌زمینه (Ambient Outer Glow)
         Box(
             modifier = Modifier
-                .size(170.dp)
+                .size(280.dp)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            neonGreen.copy(alpha = if (isRunning) 0.30f else 0.08f),
+                            midGreen.copy(alpha = if (isRunning) 0.10f else 0.02f),
+                            Color.Transparent
+                        )
+                    ),
+                    shape = CircleShape
+                )
+        )
+
+        // ۲. دایره اصلی دکمه با تک‌حلقه نئونی دور آن (بدون حلقه‌های اضافی بیرونی)
+        Box(
+            modifier = Modifier
+                .size(180.dp)
                 .clip(CircleShape)
-                .background(if (isRunning) limeGreen else darkGray)
-                .border(2.dp, if (isRunning) Color.Transparent else lightGray, CircleShape)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(darkCoreCenter, darkCoreEdge)
+                    )
+                )
+                .border(
+                    width = 3.dp,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            midGreen.copy(alpha = 0.55f * activeAlpha),
+                            neonGreen.copy(alpha = 0.90f * activeAlpha),
+                            brightHighlight.copy(alpha = activeAlpha)
+                        )
+                    ),
+                    shape = CircleShape
+                )
                 .clickable { onClick() },
             contentAlignment = Alignment.Center
         ) {
+            // ۳. آیکون پاور و متن وضعیت
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     painter = painterResource(id = R.drawable.ic_power),
                     contentDescription = "Power",
-                    tint = if (isRunning) Color.Black else Color.Gray,
-                    modifier = Modifier.size(52.dp)
+                    tint = if (isRunning) neonGreen else neonGreen.copy(alpha = 0.65f),
+                    modifier = Modifier.size(48.dp)
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = if (isRunning) "Disconnect" else "Connect",
-                    color = if (isRunning) Color.Black else limeGreen,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium
+                    color = if (isRunning) neonGreen else neonGreen.copy(alpha = 0.75f),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
                 )
             }
         }

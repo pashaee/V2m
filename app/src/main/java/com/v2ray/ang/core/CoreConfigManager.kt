@@ -146,7 +146,7 @@ object CoreConfigManager {
                     },
                     "servers": [
                       "fakedns",
-                      "https://1.1.1.1/dns-query"
+                      "h2c://1.1.1.1/dns-query"
                     ],
                     "queryStrategy": "UseIPv4",
                     "tag": "dns-module"
@@ -183,6 +183,7 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
+                          "quic",
                           "fakedns"
                         ]
                       },
@@ -226,6 +227,22 @@ object CoreConfigManager {
                       }
                     },
                     {
+                          "tag": "tls-repack-dns",
+                          "protocol": "direct",
+                          "settings": {
+                            "redirect": "1.1.1.1:443"
+                          },
+                          "streamSettings": {
+                            "security": "tls",
+                            "tlsSettings": {
+                              "serverName": "www.microsoft.com",
+                              "verifyPeerCertByName": "fromMitM,www.microsoft.com",
+                              "alpn": ["fromMitM"],
+                              "fingerprint": "chrome"
+                            }
+                          }
+                        },
+                    {
                       "tag": "dns-out",
                       "protocol": "dns"
                     },
@@ -261,7 +278,7 @@ object CoreConfigManager {
                         "inboundTag": [
                           "dns-module"
                         ],
-                        "outboundTag": "proxy"
+                        "outboundTag": "tls-repack-dns"
                       },
                       {
                         "type": "field",
@@ -269,7 +286,7 @@ object CoreConfigManager {
                           "1.1.1.1",
                           "1.0.0.1"
                         ],
-                        "outboundTag": "proxy"
+                        "outboundTag": "tls-repack-dns"
                       },
                       {
                         "type": "field",
