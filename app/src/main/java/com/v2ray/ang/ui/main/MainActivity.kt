@@ -28,6 +28,7 @@ import com.v2ray.ang.ui.AboutActivity
 import com.v2ray.ang.ui.backup.BackupActivity
 import com.v2ray.ang.ui.base.HelperBaseComponentActivity
 import com.v2ray.ang.ui.checkupdate.CheckUpdateActivity
+import com.v2ray.ang.ui.films.FilmsActivity
 import com.v2ray.ang.ui.logcat.LogcatActivity
 import com.v2ray.ang.ui.perappproxy.PerAppProxyActivity
 import com.v2ray.ang.ui.routing.RoutingSettingActivity
@@ -76,7 +77,7 @@ class MainActivity : HelperBaseComponentActivity() {
                 ProfileEditorResult.EXTRA_RESTART_SERVICE, false
             )
             val selectedProfileSaved = action == ProfileEditorResult.ACTION_SAVED &&
-                data.getStringExtra(ProfileEditorResult.EXTRA_GUID) == mainViewModel.uiState.value.selectedGuid
+                    data.getStringExtra(ProfileEditorResult.EXTRA_GUID) == mainViewModel.uiState.value.selectedGuid
             mainViewModel.onAction(MainAction.RefreshGroups)
             if (restartService || selectedProfileSaved) LauncherManager.restartService(this)
         }
@@ -147,6 +148,7 @@ class MainActivity : HelperBaseComponentActivity() {
             MainDestination.CheckUpdate -> Intent(this, CheckUpdateActivity::class.java)
             MainDestination.BackupRestore -> Intent(this, BackupActivity::class.java)
             MainDestination.About -> Intent(this, AboutActivity::class.java)
+            MainDestination.Films -> Intent(this, FilmsActivity::class.java)
             MainDestination.Promotion -> {
                 Utils.openUri(
                     this,

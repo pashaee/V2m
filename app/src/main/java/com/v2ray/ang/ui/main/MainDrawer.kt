@@ -1,7 +1,6 @@
 package com.v2ray.ang.ui.main
 
 import androidx.annotation.DrawableRes
-import androidx.compose.ui.graphics.Color
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,14 +15,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
-import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
@@ -35,7 +35,6 @@ import com.v2ray.ang.R
 import com.v2ray.ang.ui.compose.AppDivider
 import kotlinx.coroutines.launch
 
-// گزینه‌ها را در Enum نگه می‌داریم تا فایلهای دیگر برنامه ارور ندهند
 enum class MainDestination(@DrawableRes val iconRes: Int, @StringRes val labelRes: Int) {
     Subscriptions(R.drawable.ic_subscriptions_24dp, R.string.title_sub_setting),
     PerAppProxy(R.drawable.ic_per_apps_24dp, R.string.per_app_proxy_settings),
@@ -46,14 +45,15 @@ enum class MainDestination(@DrawableRes val iconRes: Int, @StringRes val labelRe
     Logcat(R.drawable.ic_logcat_24dp, R.string.title_logcat),
     CheckUpdate(R.drawable.ic_check_update_24dp, R.string.update_check_for_update),
     BackupRestore(R.drawable.ic_restore_24dp, R.string.title_configuration_backup_restore),
-    About(R.drawable.ic_about_24dp, R.string.title_about)
+    About(R.drawable.ic_about_24dp, R.string.title_about),
+    Films(R.drawable.ic_public, R.string.title_about)
 }
 
 @Composable
 fun MainDrawerContent(
     drawerState: DrawerState,
     onNavigate: (MainDestination) -> Unit,
-    onCheckUpdate: () -> Unit // دستور جدید برای آپدیت مستقیم
+    onCheckUpdate: () -> Unit
 ) {
     val drawerScrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
@@ -61,11 +61,10 @@ fun MainDrawerContent(
 
     ModalDrawerSheet(
         drawerState = drawerState,
-        modifier = Modifier.fillMaxWidth(), // عرض 100 درصد (تمام صفحه)
-        drawerContainerColor = Color(0xFF000000), // پس‌زمینه مشکی خالص
-        drawerShape = RectangleShape // حذف گوشه‌های گرد برای القای حس تمام‌صفحه
+        modifier = Modifier.fillMaxWidth(),
+        drawerContainerColor = Color(0xFF000000),
+        drawerShape = RectangleShape
     ) {
-        // هدر منو به همراه دکمه برگشت
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -85,7 +84,7 @@ fun MainDrawerContent(
             )
         }
 
-        AppDivider() // ارور در این خط بود که با حذف کلمه color برطرف شد
+        AppDivider()
 
         Column(
             modifier = Modifier
@@ -94,7 +93,26 @@ fun MainDrawerContent(
                 .padding(top = 8.dp)
         ) {
 
-            // ---> 1. گزینه سابسکریپشن <---
+            // ---> گزینه Films (با استفاده از آیکون استاندارد R.drawable.ic_public) <---
+            NavigationDrawerItem(
+                label = { Text("Films & Series", color = Color(0xFFC6F044), fontWeight = FontWeight.Bold) },
+                selected = false,
+                onClick = {
+                    onNavigate(MainDestination.Films)
+                    scope.launch { drawerState.close() }
+                },
+                icon = {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_public),
+                        tint = Color(0xFFC6F044),
+                        contentDescription = "Films"
+                    )
+                },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
+            )
+
+            // 1. گزینه سابسکریپشن
             NavigationDrawerItem(
                 label = { Text(stringResource(R.string.title_sub_setting), color = Color.White) },
                 selected = false,
@@ -107,7 +125,7 @@ fun MainDrawerContent(
                 colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
             )
 
-            // ---> 2. گزینه تنظیمات مسیریابی (Routing) که اضافه شد <---
+            // 2. گزینه تنظیمات مسیریابی (Routing)
             NavigationDrawerItem(
                 label = { Text(stringResource(R.string.routing_settings_title), color = Color.White) },
                 selected = false,
@@ -125,8 +143,8 @@ fun MainDrawerContent(
                 label = { Text(stringResource(R.string.update_check_for_update), color = Color.White) },
                 selected = false,
                 onClick = {
-                    onCheckUpdate() // اجرای چک آپدیت مستقیم
-                    scope.launch { drawerState.close() } // بستن منو
+                    onCheckUpdate()
+                    scope.launch { drawerState.close() }
                 },
                 icon = { Icon(painterResource(R.drawable.ic_check_update_24dp), tint = Color(0xFFB0B0B0), contentDescription = null) },
                 modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
@@ -146,15 +164,15 @@ fun MainDrawerContent(
                 colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
             )
 
-            // 5. گزینه Contact Us (لینک مستقیم به تلگرام)
+            // 5. گزینه Contact Us
             NavigationDrawerItem(
                 label = { Text("Contact Us", color = Color.White) },
                 selected = false,
                 onClick = {
-                    uriHandler.openUri("https://t.me/v2raymasterss") // انتقال به تلگرام
+                    uriHandler.openUri("https://t.me/v2raymasterss")
                     scope.launch { drawerState.close() }
                 },
-                icon = { Icon(painterResource(R.drawable.ic_promotion_24dp), tint = Color(0xFF0088FF), contentDescription = null) }, // رنگ آیکون به صورت اختصاصی آبی تنظیم شد
+                icon = { Icon(painterResource(R.drawable.ic_promotion_24dp), tint = Color(0xFF0088FF), contentDescription = null) },
                 modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
             )

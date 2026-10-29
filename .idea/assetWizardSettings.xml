@@ -212,18 +212,8 @@
                                             <option name="values">
                                               <map>
                                                 <entry key="color" value="000000" />
-                                                <entry key="imagePath" value="C:\Users\pasha\AppData\Local\Temp\baseline_private_connectivity_24.xml" />
-                                              </map>
-                                            </option>
-                                          </PersistentState>
-                                        </value>
-                                      </entry>
-                                      <entry key="clipartAsset">
-                                        <value>
-                                          <PersistentState>
-                                            <option name="values">
-                                              <map>
-                                                <entry key="url" value="file:/$USER_HOME$/AppData/Local/Android/Sdk/icons/material/materialicons/private_connectivity/baseline_private_connectivity_24.xml" />
+                                                <entry key="imagePath" value="C:\Users\pasha\AppData\Local\Temp" />
+                                                <entry key="trimmed" value="true" />
                                               </map>
                                             </option>
                                           </PersistentState>
@@ -235,8 +225,9 @@
                                             <option name="values">
                                               <map>
                                                 <entry key="color" value="000000" />
-                                                <entry key="imagePath" value="C:\Users\pasha\Downloads\images.jpg" />
-                                                <entry key="paddingPercent" value="5" />
+                                                <entry key="imagePath" value="D:\vpn\v2raymasterslogo.jpg" />
+                                                <entry key="paddingPercent" value="-5" />
+                                                <entry key="trimmed" value="true" />
                                               </map>
                                             </option>
                                           </PersistentState>
@@ -268,7 +259,7 @@
                                   </option>
                                   <option name="values">
                                     <map>
-                                      <entry key="imageAsset" value="C:\Users\pasha\Downloads\images.jpg" />
+                                      <entry key="imageAsset" value="D:\vpn\v2raymasterslogo.jpg" />
                                     </map>
                                   </option>
                                 </PersistentState>
@@ -349,11 +340,6 @@
                                 </PersistentState>
                               </value>
                             </entry>
-                          </map>
-                        </option>
-                        <option name="values">
-                          <map>
-                            <entry key="outputIconType" value="NOTIFICATION" />
                           </map>
                         </option>
                       </PersistentState>

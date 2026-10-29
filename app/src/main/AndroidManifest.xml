@@ -80,6 +80,10 @@
                 android:resource="@xml/shortcuts" />
         </activity>
         <activity
+            android:name=".ui.films.FilmsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false" />
+        <activity
             android:name=".ui.server.ServerVmessActivity"
             android:exported="false"
             android:windowSoftInputMode="stateUnchanged|adjustResize" />

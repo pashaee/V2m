@@ -131,12 +131,6 @@ object CoreConfigManager {
                   "log": {
                     "loglevel": "warning"
                   },
-                  "fakedns": [
-                    {
-                      "ipPool": "198.18.0.0/15",
-                      "poolSize": 65535
-                    }
-                  ],
                   "dns": {
                     "hosts": {
                       "cloudflare-dns.com": [
@@ -145,8 +139,7 @@ object CoreConfigManager {
                       ]
                     },
                     "servers": [
-                      "fakedns",
-                      "h2c://1.1.1.1/dns-query"
+                      "https://1.1.1.1/dns-query"
                     ],
                     "queryStrategy": "UseIPv4",
                     "tag": "dns-module"
@@ -162,8 +155,7 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic",
-                          "fakedns"
+                          "quic"
                         ],
                         "routeOnly": false
                       },
@@ -183,8 +175,7 @@ object CoreConfigManager {
                         "destOverride": [
                           "http",
                           "tls",
-                          "quic",
-                          "fakedns"
+                          "quic"
                         ]
                       },
                       "settings": {
@@ -227,22 +218,6 @@ object CoreConfigManager {
                       }
                     },
                     {
-                          "tag": "tls-repack-dns",
-                          "protocol": "direct",
-                          "settings": {
-                            "redirect": "1.1.1.1:443"
-                          },
-                          "streamSettings": {
-                            "security": "tls",
-                            "tlsSettings": {
-                              "serverName": "www.microsoft.com",
-                              "verifyPeerCertByName": "fromMitM,www.microsoft.com",
-                              "alpn": ["fromMitM"],
-                              "fingerprint": "chrome"
-                            }
-                          }
-                        },
-                    {
                       "tag": "dns-out",
                       "protocol": "dns"
                     },
@@ -255,6 +230,7 @@ object CoreConfigManager {
                         }
                       }
                     },
+                    
                     {
                       "tag": "block",
                       "protocol": "blackhole"
@@ -271,14 +247,14 @@ object CoreConfigManager {
                           "http-local"
                         ],
                         "port": 53,
-                        "outboundTag": "dns-out"
+                        "outboundTag": "proxy"
                       },
                       {
                         "type": "field",
                         "inboundTag": [
                           "dns-module"
                         ],
-                        "outboundTag": "tls-repack-dns"
+                        "outboundTag": "proxy"
                       },
                       {
                         "type": "field",
@@ -286,7 +262,7 @@ object CoreConfigManager {
                           "1.1.1.1",
                           "1.0.0.1"
                         ],
-                        "outboundTag": "tls-repack-dns"
+                        "outboundTag": "proxy"
                       },
                       {
                         "type": "field",
@@ -311,20 +287,6 @@ object CoreConfigManager {
                       {
                         "type": "field",
                         "outboundTag": "direct",
-                        "ip": [
-                          "geoip:private"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "domain": [
-                          "geosite:private"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
                         "domain": [
                           "geosite:ir",
                           "domain:.ir"
@@ -337,6 +299,21 @@ object CoreConfigManager {
                           "geoip:ir"
                         ]
                       },
+                      {
+                        "type": "field",
+                        "outboundTag": "direct",
+                        "ip": [
+                          "geoip:private"
+                        ]
+                      },
+                      {
+                        "type": "field",
+                        "outboundTag": "direct",
+                        "domain": [
+                          "geosite:private"
+                        ]
+                      },
+                      
                       {
                         "type": "field",
                         "network": "tcp,udp",
