@@ -14,8 +14,8 @@ android {
         applicationId = "com.v2m.app"
         minSdk = 29
         targetSdk = 37
-        versionCode = 745
-        versionName = "1.0.0"
+        versionCode = 746
+        versionName = "3.0.0"
 
         val abiFilterList = (properties["ABI_FILTERS"] as? String)?.split(';')
         splits {
@@ -37,8 +37,28 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            val ksPath = System.getenv("KEYSTORE_FILE") ?: "keystore.jks"
+            val ksFile = file(ksPath)
+            if (ksFile.exists() && !System.getenv("KEYSTORE_PASSWORD").isNullOrEmpty()) {
+                storeFile = ksFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
+            val releaseSign = signingConfigs.getByName("release")
+            if (releaseSign.storeFile?.exists() == true) {
+                signingConfig = releaseSign
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
