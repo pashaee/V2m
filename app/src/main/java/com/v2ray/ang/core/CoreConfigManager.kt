@@ -23,8 +23,29 @@ import com.v2ray.ang.util.PackageUidResolver
 import com.v2ray.ang.util.Utils
 
 object CoreConfigManager {
+    @Volatile
     private var initConfigCache: String? = null
+
+    @Volatile
     private var initConfigCacheWithTun: String? = null
+
+    private val CUSTOM_VLESS_NETWORKS = setOf("ws", "xhttp", "httpupgrade")
+    private val IPV4_REGEX = Regex("""^(\d{1,3}\.){3}\d{1,3}$""")
+
+    private const val CUSTOM_EDGE_USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+
+    private const val CUSTOM_TLS_CIPHER_SUITES =
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:" +
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:" +
+                "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:" +
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:" +
+                "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:" +
+                "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:" +
+                "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:" +
+                "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:" +
+                "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:" +
+                "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
 
     //region get config function
 
@@ -33,304 +54,16 @@ object CoreConfigManager {
      */
     fun getV2rayConfig(context: Context, guid: String): ConfigResult {
         try {
-            // --- شروع کدهای اختصاصی شما (پشتیبانی از VLESS + TLS روی ws, xhttp, httpupgrade) ---
             val serverConfig = MmkvManager.decodeServerConfig(guid)
-            val supportedNetworks = setOf("ws", "xhttp", "httpupgrade")
-
-            // شرط هوشمند: فقط VLESS با امنیت TLS و شبکه‌های ws, xhttp, httpupgrade
-            if (serverConfig != null &&
-                serverConfig.configType == EConfigType.VLESS &&
-                serverConfig.security.equals(AppConfig.TLS, ignoreCase = true) &&
-                serverConfig.network in supportedNetworks
-            ) {
-                val network = serverConfig.network ?: "ws"
-                val dynUuid = serverConfig.password ?: ""
-                val dynAddress = serverConfig.server ?: ""
-                val dynPort = serverConfig.serverPort?.takeIf { it.isNotEmpty() } ?: "443"
-                val dynHost = serverConfig.host?.takeIf { it.isNotEmpty() }
-                    ?: serverConfig.sni?.takeIf { it.isNotEmpty() }
-                    ?: dynAddress
-                val dynSni = serverConfig.sni?.takeIf { it.isNotEmpty() } ?: dynHost
-                val dynPath = serverConfig.path?.takeIf { it.isNotEmpty() } ?: "/"
-                val localPort = SettingsManager.getSocksPort()
-                val vpnMtu = SettingsManager.getVpnMtu()
-
-                // تنظیم ALPN متناسب با نوع شبکه (h2 برای xhttp و http/1.1 برای ws/httpupgrade)
-                val alpnJson = if (network == "xhttp") {
-                    """"h2", "http/1.1""""
-                } else {
-                    """"http/1.1""""
+            if (isCustomVlessTlsProfile(serverConfig)) {
+                buildCustomVlessTlsConfig(serverConfig!!, isSpeedtest = false)?.let { customJson ->
+                    return ConfigResult(
+                        status = true,
+                        guid = guid,
+                        content = customJson
+                    )
                 }
-
-                // ساخت اختصاصی تنظیمات هر پروتکل انتقال
-                val transportSettingsJson = when (network) {
-                    "ws" -> """
-                        "wsSettings": {
-                          "path": "$dynPath",
-                          "headers": {
-                            "Host": "$dynHost",
-                            "User-Agent": "edge"
-                          }
-                        }
-                    """.trimIndent()
-
-                    "httpupgrade" -> """
-                        "httpupgradeSettings": {
-                          "path": "$dynPath",
-                          "host": "$dynHost"
-                        }
-                    """.trimIndent()
-
-                    "xhttp" -> {
-                        val xhttpMode = serverConfig.xhttpMode?.takeIf { it.isNotEmpty() } ?: "auto"
-                        val extraRaw = serverConfig.xhttpExtra?.trim()
-                        val extraJson = if (!extraRaw.isNullOrEmpty() && JsonUtil.parseString(extraRaw) != null) {
-                            """,
-                          "extra": $extraRaw"""
-                        } else ""
-
-                        """
-                        "xhttpSettings": {
-                          "path": "$dynPath",
-                          "host": "$dynHost",
-                          "mode": "$xhttpMode"$extraJson
-                        }
-                        """.trimIndent()
-                    }
-
-                    else -> ""
-                }
-
-                // بررسی هوشمندانه برای نیاز به ساخت TUN در داخل Xray
-                val needTunInbound = SettingsManager.isVpnMode() && !SettingsManager.isUsingHevTun()
-                val tunInboundJson = if (needTunInbound) {
-                    """
-                    ,{
-                      "tag": "tun",
-                      "protocol": "tun",
-                      "settings": {
-                        "mtu": $vpnMtu
-                      },
-                      "sniffing": {
-                        "enabled": true,
-                        "destOverride": [
-                          "http",
-                          "tls",
-                          "quic",
-                          "fakedns"
-                        ],
-                        "routeOnly": false
-                      }
-                    }
-                    """.trimIndent()
-                } else ""
-
-                val customJson = """
-                {
-                  "remarks": "${serverConfig.remarks.ifEmpty { "کانفیگ اختصاصی شما" }}",
-                  "log": {
-                    "loglevel": "warning"
-                  },
-                  "dns": {
-                    "hosts": {
-                      "cloudflare-dns.com": [
-                        "1.1.1.1",
-                        "1.0.0.1"
-                      ]
-                    },
-                    "servers": [
-                      "https://1.1.1.1/dns-query"
-                    ],
-                    "queryStrategy": "UseIPv4",
-                    "tag": "dns-module"
-                  },
-                  "inbounds": [
-                    {
-                      "tag": "socks",
-                      "port": $localPort,
-                      "listen": "0.0.0.0",
-                      "protocol": "mixed",
-                      "sniffing": {
-                        "enabled": true,
-                        "destOverride": [
-                          "http",
-                          "tls",
-                          "quic"
-                        ],
-                        "routeOnly": false
-                      },
-                      "settings": {
-                        "auth": "noauth",
-                        "udp": true,
-                        "allowTransparent": false
-                      }
-                    },
-                    {
-                      "tag": "http-local",
-                      "port": 10809,
-                      "listen": "127.0.0.1",
-                      "protocol": "http",
-                      "sniffing": {
-                        "enabled": true,
-                        "destOverride": [
-                          "http",
-                          "tls",
-                          "quic"
-                        ]
-                      },
-                      "settings": {
-                        "allowTransparent": false
-                      }
-                    }$tunInboundJson
-                  ],
-                  "outbounds": [
-                    {
-                      "tag": "proxy",
-                      "protocol": "vless",
-                      "settings": {
-                        "vnext": [
-                          {
-                            "address": "$dynAddress",
-                            "port": $dynPort,
-                            "users": [
-                              {
-                                "id": "$dynUuid",
-                                "email": "t@t.tt",
-                                "security": "auto",
-                                "encryption": "none"
-                              }
-                            ]
-                          }
-                        ]
-                      },
-                      "streamSettings": {
-                        "network": "$network",
-                        "security": "tls",
-                        "tlsSettings": {
-                          "serverName": "$dynSni",
-                          "alpn": [
-                            $alpnJson
-                          ],
-                          "fingerprint": "unsafe",
-                          "cipherSuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
-                        },
-                        $transportSettingsJson
-                      }
-                    },
-                    {
-                      "tag": "dns-out",
-                      "protocol": "dns"
-                    },
-                    {
-                      "tag": "direct",
-                      "protocol": "freedom",
-                      "streamSettings": {
-                        "sockopt": {
-                          "domainStrategy": "UseIP"
-                        }
-                      }
-                    },
-                    
-                    {
-                      "tag": "block",
-                      "protocol": "blackhole"
-                    }
-                  ],
-                  "routing": {
-                    "domainStrategy": "IPIfNonMatch",
-                    "rules": [
-                      {
-                        "type": "field",
-                        "inboundTag": [
-                          "socks",
-                          "tun",
-                          "http-local"
-                        ],
-                        "port": 53,
-                        "outboundTag": "proxy"
-                      },
-                      {
-                        "type": "field",
-                        "inboundTag": [
-                          "dns-module"
-                        ],
-                        "outboundTag": "proxy"
-                      },
-                      {
-                        "type": "field",
-                        "ip": [
-                          "1.1.1.1",
-                          "1.0.0.1"
-                        ],
-                        "outboundTag": "proxy"
-                      },
-                      {
-                        "type": "field",
-                        "network": "udp",
-                        "port": 443,
-                        "outboundTag": "block"
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "protocol": [
-                          "bittorrent"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "block",
-                        "domain": [
-                          "geosite:category-ads-all"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "domain": [
-                          "geosite:ir",
-                          "domain:.ir"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "ip": [
-                          "geoip:ir"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "ip": [
-                          "geoip:private"
-                        ]
-                      },
-                      {
-                        "type": "field",
-                        "outboundTag": "direct",
-                        "domain": [
-                          "geosite:private"
-                        ]
-                      },
-                      
-                      {
-                        "type": "field",
-                        "network": "tcp,udp",
-                        "outboundTag": "proxy"
-                      }
-                    ]
-                  }
-                }
-                """.trimIndent()
-
-                return ConfigResult(
-                    status = true,
-                    guid = guid,
-                    content = customJson
-                )
             }
-            // --- پایان کدهای اختصاصی شما ---
 
             val configContext = CoreConfigContextBuilder.build(context, guid)
                 ?: return ConfigResult(
@@ -354,11 +87,21 @@ object CoreConfigManager {
 
     /**
      * Build a lightweight configuration for latency testing.
-     *
      * The core flow is reused, then non-essential sections are removed.
      */
     fun getV2rayConfig4Speedtest(context: Context, guid: String): ConfigResult {
         try {
+            val serverConfig = MmkvManager.decodeServerConfig(guid)
+            if (isCustomVlessTlsProfile(serverConfig)) {
+                buildCustomVlessTlsConfig(serverConfig!!, isSpeedtest = true)?.let { customJson ->
+                    return ConfigResult(
+                        status = true,
+                        guid = guid,
+                        content = customJson
+                    )
+                }
+            }
+
             val configContext = CoreConfigContextBuilder.build(context, guid)
                 ?: return ConfigResult(
                     status = false,
@@ -383,6 +126,426 @@ object CoreConfigManager {
     }
 
     /**
+     * Check whether a profile matches the custom VLESS + TLS (ws, xhttp, httpupgrade) flow.
+     */
+    private fun isCustomVlessTlsProfile(serverConfig: ProfileItem?): Boolean {
+        if (serverConfig == null) return false
+        val network = serverConfig.network?.trim()?.lowercase() ?: return false
+        return serverConfig.configType == EConfigType.VLESS &&
+                serverConfig.security.equals(AppConfig.TLS, ignoreCase = true) &&
+                network in CUSTOM_VLESS_NETWORKS
+    }
+
+    /**
+     * Build a type-safe, JSON-escaped custom VLESS + TLS config for both normal startup and speedtest.
+     */
+    private fun buildCustomVlessTlsConfig(serverConfig: ProfileItem, isSpeedtest: Boolean): String? {
+        val dynUuid = serverConfig.password?.trim().orEmpty()
+        val dynAddress = serverConfig.server?.trim().orEmpty()
+        if (dynUuid.isEmpty() || dynAddress.isEmpty()) {
+            return null
+        }
+
+        val network = serverConfig.network?.trim()?.lowercase() ?: "ws"
+        val dynPort = serverConfig.serverPort?.trim()?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443
+        val dynHost = serverConfig.host?.trim()?.takeIf { it.isNotEmpty() }
+            ?: serverConfig.sni?.trim()?.takeIf { it.isNotEmpty() }
+            ?: dynAddress
+        val dynSni = serverConfig.sni?.trim()?.takeIf { it.isNotEmpty() } ?: dynHost
+        val dynPath = serverConfig.path?.takeIf { it.isNotEmpty() } ?: "/"
+        val logLevel = MmkvManager.decodeSettingsString(AppConfig.PREF_LOGLEVEL) ?: "warning"
+
+        val root = JsonObject()
+        root.addProperty("remarks", serverConfig.remarks.ifEmpty { "کانفیگ اختصاصی شما" })
+        root.add("log", JsonObject().apply {
+            addProperty("loglevel", logLevel)
+        })
+
+        // Resolve outbound domain upfront to avoid DNS bootstrap deadlocks
+        val preferIpv6 = MmkvManager.decodeSettingsBool(AppConfig.PREF_PREFER_IPV6) == true
+        val shouldResolveOutbound = !isSpeedtest &&
+                !isIpAddress(dynAddress) &&
+                MmkvManager.decodeSettingsString(AppConfig.PREF_OUTBOUND_DOMAIN_RESOLVE_METHOD, "1") == "1"
+        val resolvedServerIps = if (shouldResolveOutbound) {
+            HttpUtil.resolveHostToIP(dynAddress, preferIpv6)?.takeIf { it.isNotEmpty() }
+        } else {
+            null
+        }
+
+        if (!isSpeedtest) {
+            if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) == true) {
+                root.add("stats", JsonObject())
+                root.add("policy", JsonObject().apply {
+                    add("system", JsonObject().apply {
+                        addProperty("statsOutboundUplink", true)
+                        addProperty("statsOutboundDownlink", true)
+                    })
+                })
+            }
+
+            // DNS configuration (routed exclusively through proxy)
+            val hostsObj = JsonObject().apply {
+                add("cloudflare-dns.com", JsonArray().apply {
+                    add("1.1.1.1")
+                    add("1.0.0.1")
+                })
+                if (!resolvedServerIps.isNullOrEmpty()) {
+                    if (resolvedServerIps.size == 1) {
+                        addProperty(dynAddress, resolvedServerIps[0])
+                    } else {
+                        add(dynAddress, JsonArray().apply {
+                            resolvedServerIps.forEach { add(it) }
+                        })
+                    }
+                }
+            }
+
+            root.add("dns", JsonObject().apply {
+                add("hosts", hostsObj)
+                add("servers", JsonArray().apply {
+                    add("https://1.1.1.1/dns-query")
+                })
+                addProperty("queryStrategy", if (preferIpv6) "UseIP" else "UseIPv4")
+                addProperty("tag", "dns-module")
+            })
+
+            root.add("inbounds", buildCustomInbounds())
+        } else {
+            root.add("inbounds", JsonArray())
+        }
+
+        val proxyOutbound = buildCustomProxyOutbound(
+            dynAddress = dynAddress,
+            dynPort = dynPort,
+            dynUuid = dynUuid,
+            network = network,
+            dynSni = dynSni,
+            dynHost = dynHost,
+            dynPath = dynPath,
+            serverConfig = serverConfig,
+            hasResolvedHost = !resolvedServerIps.isNullOrEmpty(),
+            preferIpv6 = preferIpv6
+        )
+
+        val outboundsArray = JsonArray().apply {
+            add(proxyOutbound)
+            if (!isSpeedtest) {
+                add(JsonObject().apply {
+                    addProperty("tag", "dns-out")
+                    addProperty("protocol", "dns")
+                })
+                add(JsonObject().apply {
+                    addProperty("tag", AppConfig.TAG_DIRECT)
+                    addProperty("protocol", "freedom")
+                    add("streamSettings", JsonObject().apply {
+                        add("sockopt", JsonObject().apply {
+                            addProperty("domainStrategy", "UseIP")
+                        })
+                    })
+                })
+                add(JsonObject().apply {
+                    addProperty("tag", AppConfig.TAG_BLOCKED)
+                    addProperty("protocol", "blackhole")
+                })
+            }
+        }
+        root.add("outbounds", outboundsArray)
+
+        if (!isSpeedtest) {
+            root.add("routing", buildCustomRouting())
+        } else {
+            root.add("routing", JsonObject().apply {
+                add("rules", JsonArray())
+            })
+        }
+
+        return JsonUtil.toJsonPretty(root)
+    }
+
+    private fun buildCustomInbounds(): JsonArray {
+        val localPort = SettingsManager.getSocksPort()
+        val httpPort = SettingsManager.getHttpPort()
+        val vpnMtu = SettingsManager.getVpnMtu()
+        val listenAddr = if (MmkvManager.decodeSettingsBool(AppConfig.PREF_PROXY_SHARING) == true) {
+            "0.0.0.0"
+        } else {
+            AppConfig.LOOPBACK
+        }
+        val socksUsername = SettingsManager.getSocksUsername()
+        val socksPassword = SettingsManager.getSocksPassword()
+        val enableUdp = MmkvManager.decodeSettingsBool(AppConfig.PREF_SOCKS_ENABLE_UDP, true)
+
+        val standardSniffing = {
+            JsonObject().apply {
+                addProperty("enabled", true)
+                add("destOverride", JsonArray().apply {
+                    add("http")
+                    add("tls")
+                    add("quic")
+                })
+                addProperty("routeOnly", false)
+            }
+        }
+
+        val inbounds = JsonArray()
+
+        inbounds.add(JsonObject().apply {
+            addProperty("tag", "socks")
+            addProperty("port", localPort)
+            addProperty("listen", listenAddr)
+            addProperty("protocol", "mixed")
+            add("sniffing", standardSniffing())
+            add("settings", JsonObject().apply {
+                if (socksUsername != null && socksPassword != null) {
+                    addProperty("auth", "password")
+                    add("accounts", JsonArray().apply {
+                        add(JsonObject().apply {
+                            addProperty("user", socksUsername)
+                            addProperty("pass", socksPassword)
+                        })
+                    })
+                } else {
+                    addProperty("auth", "noauth")
+                }
+                addProperty("udp", enableUdp)
+                addProperty("allowTransparent", false)
+            })
+        })
+
+        if (httpPort != localPort) {
+            inbounds.add(JsonObject().apply {
+                addProperty("tag", "http-local")
+                addProperty("port", httpPort)
+                addProperty("listen", AppConfig.LOOPBACK)
+                addProperty("protocol", "http")
+                add("sniffing", standardSniffing())
+                add("settings", JsonObject().apply {
+                    addProperty("allowTransparent", false)
+                })
+            })
+        }
+
+        if (needTun()) {
+            inbounds.add(JsonObject().apply {
+                addProperty("tag", "tun")
+                addProperty("protocol", "tun")
+                add("settings", JsonObject().apply {
+                    addProperty("mtu", vpnMtu)
+                })
+                add("sniffing", standardSniffing())
+            })
+        }
+
+        return inbounds
+    }
+
+    private fun buildCustomProxyOutbound(
+        dynAddress: String,
+        dynPort: Int,
+        dynUuid: String,
+        network: String,
+        dynSni: String,
+        dynHost: String,
+        dynPath: String,
+        serverConfig: ProfileItem,
+        hasResolvedHost: Boolean,
+        preferIpv6: Boolean
+    ): JsonObject {
+        val tlsSettings = JsonObject().apply {
+            addProperty("serverName", dynSni)
+            add("alpn", JsonArray().apply {
+                if (network == "xhttp") {
+                    add("h2")
+                }
+                add("http/1.1")
+            })
+            addProperty("enableSessionResumption", true)
+            // Omitting uTLS fingerprint ensures Xray uses Go TLS so custom cipherSuites take effect reliably
+            addProperty("cipherSuites", CUSTOM_TLS_CIPHER_SUITES)
+        }
+
+        val streamSettings = JsonObject().apply {
+            addProperty("network", network)
+            addProperty("security", "tls")
+            add("tlsSettings", tlsSettings)
+
+            when (network) {
+                "ws" -> {
+                    add("wsSettings", JsonObject().apply {
+                        addProperty("path", dynPath)
+                        add("headers", JsonObject().apply {
+                            addProperty("Host", dynHost)
+                            addProperty("User-Agent", CUSTOM_EDGE_USER_AGENT)
+                        })
+                    })
+                }
+
+                "httpupgrade" -> {
+                    add("httpupgradeSettings", JsonObject().apply {
+                        addProperty("path", dynPath)
+                        addProperty("host", dynHost)
+                    })
+                }
+
+                "xhttp" -> {
+                    val xhttpMode = serverConfig.xhttpMode?.trim()?.takeIf { it.isNotEmpty() } ?: "auto"
+                    val extraObj = serverConfig.xhttpExtra?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { JsonUtil.parseString(it) }
+                        ?.takeIf { it.isJsonObject }
+                        ?.asJsonObject
+
+                    add("xhttpSettings", JsonObject().apply {
+                        addProperty("path", dynPath)
+                        addProperty("host", dynHost)
+                        addProperty("mode", xhttpMode)
+                        if (extraObj != null) {
+                            add("extra", extraObj)
+                        }
+                    })
+                }
+            }
+
+            if (hasResolvedHost) {
+                add("sockopt", JsonObject().apply {
+                    addProperty("domainStrategy", "UseIP")
+                    add("happyEyeballs", JsonObject().apply {
+                        addProperty("prioritizeIPv6", preferIpv6)
+                        addProperty("interleave", 2)
+                    })
+                })
+            }
+        }
+
+        return JsonObject().apply {
+            addProperty("tag", AppConfig.TAG_PROXY)
+            addProperty("protocol", "vless")
+            add("settings", JsonObject().apply {
+                add("vnext", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("address", dynAddress)
+                        addProperty("port", dynPort)
+                        add("users", JsonArray().apply {
+                            add(JsonObject().apply {
+                                addProperty("id", dynUuid)
+                                addProperty("email", "t@t.tt")
+                                addProperty("encryption", "none")
+                            })
+                        })
+                    })
+                })
+            })
+            add("streamSettings", streamSettings)
+        }
+    }
+
+    /**
+     * Exact original routing rules with all DNS traffic routed through proxy.
+     */
+    private fun buildCustomRouting(): JsonObject {
+        val rules = JsonArray().apply {
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                add("inboundTag", JsonArray().apply {
+                    add("socks")
+                    add("tun")
+                    add("http-local")
+                })
+                addProperty("port", 53)
+                addProperty("outboundTag", AppConfig.TAG_PROXY)
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                add("inboundTag", JsonArray().apply {
+                    add("dns-module")
+                })
+                addProperty("outboundTag", AppConfig.TAG_PROXY)
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                add("ip", JsonArray().apply {
+                    add("1.1.1.1")
+                    add("1.0.0.1")
+                })
+                addProperty("outboundTag", AppConfig.TAG_PROXY)
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("network", "udp")
+                addProperty("port", 443)
+                addProperty("outboundTag", AppConfig.TAG_BLOCKED)
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("outboundTag", AppConfig.TAG_DIRECT)
+                add("protocol", JsonArray().apply {
+                    add("bittorrent")
+                })
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("outboundTag", AppConfig.TAG_BLOCKED)
+                add("domain", JsonArray().apply {
+                    add("geosite:category-ads-all")
+                })
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("outboundTag", AppConfig.TAG_DIRECT)
+                add("domain", JsonArray().apply {
+                    add("geosite:ir")
+                    add("domain:.ir")
+                })
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("outboundTag", AppConfig.TAG_DIRECT)
+                add("ip", JsonArray().apply {
+                    add("geoip:ir")
+                })
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("outboundTag", AppConfig.TAG_DIRECT)
+                add("ip", JsonArray().apply {
+                    add("geoip:private")
+                })
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("outboundTag", AppConfig.TAG_DIRECT)
+                add("domain", JsonArray().apply {
+                    add("geosite:private")
+                })
+            })
+
+            add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("network", "tcp,udp")
+                addProperty("outboundTag", AppConfig.TAG_PROXY)
+            })
+        }
+
+        return JsonObject().apply {
+            addProperty("domainStrategy", "IPIfNonMatch")
+            add("rules", rules)
+        }
+    }
+
+    private fun isIpAddress(host: String): Boolean {
+        return IPV4_REGEX.matches(host) || host.contains(":")
+    }
+
+    /**
      * Build configuration for custom profiles.
      */
     private fun buildV2rayCustomConfig(configContext: CoreConfigContext): ConfigResult {
@@ -397,22 +560,31 @@ object CoreConfigManager {
 
         val json = JsonUtil.parseString(raw)?.takeIf { it.isJsonObject }?.asJsonObject ?: return result
 
-        // Inject or remove traffic statistics configuration based on user preference
+        // Inject or clean up traffic statistics configuration without wiping unrelated policy levels
         if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) == true) {
             if (!json.has("stats")) {
                 json.add("stats", JsonObject())
             }
-            if (!json.has("policy")) {
-                val policyObj = JsonObject()
-                val systemObj = JsonObject()
-                systemObj.addProperty("statsOutboundUplink", true)
-                systemObj.addProperty("statsOutboundDownlink", true)
-                policyObj.add("system", systemObj)
-                json.add("policy", policyObj)
-            }
+            val policyObj = json.get("policy")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: JsonObject().also { json.add("policy", it) }
+            val systemObj = policyObj.get("system")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: JsonObject().also { policyObj.add("system", it) }
+            systemObj.addProperty("statsOutboundUplink", true)
+            systemObj.addProperty("statsOutboundDownlink", true)
         } else {
             json.remove("stats")
-            json.remove("policy")
+            json.get("policy")?.takeIf { it.isJsonObject }?.asJsonObject?.let { policyObj ->
+                policyObj.get("system")?.takeIf { it.isJsonObject }?.asJsonObject?.let { systemObj ->
+                    systemObj.remove("statsOutboundUplink")
+                    systemObj.remove("statsOutboundDownlink")
+                    if (systemObj.size() == 0) {
+                        policyObj.remove("system")
+                    }
+                }
+                if (policyObj.size() == 0) {
+                    json.remove("policy")
+                }
+            }
         }
 
         if (!needTun()) {
@@ -437,7 +609,7 @@ object CoreConfigManager {
             }
         }
 
-        // check if tun inbound exists
+        // Check if tun inbound exists
         val inboundsJson = json.get("inbounds")?.takeIf { it.isJsonArray }?.asJsonArray
             ?: JsonArray().also { json.add("inbounds", it) }
         val tunNotExists = inboundsJson.none { elem ->
@@ -447,7 +619,6 @@ object CoreConfigManager {
         }
 
         if (tunNotExists) {
-            // add tun inbound from template
             val templateConfig = initV2rayConfig(configContext)
             templateConfig.inbounds.firstOrNull { it.tag == "tun" }?.let { inboundTun ->
                 inboundTun.settings?.mtu = SettingsManager.getVpnMtu()
@@ -460,9 +631,6 @@ object CoreConfigManager {
 
     /**
      * Build one unified configuration for every non-custom profile type.
-     *
-     * The analyzed outbound plan is consumed in order and converted to concrete
-     * outbounds before routing, DNS, and runtime extras are assembled.
      */
     private fun buildUnifiedConfig(configContext: CoreConfigContext): V2rayConfig {
         require(configContext.resolvedOutbounds.isNotEmpty()) { "resolvedOutbounds must not be empty for a non-CUSTOM context" }
@@ -481,8 +649,6 @@ object CoreConfigManager {
         val policyGroupBalancerTags = mutableMapOf<String, String>()
         val balancerStrategies = mutableListOf<BalancerStrategy>()
 
-        // resolvedOutbounds is a single ordered plan: index 0 is primary and must be prepended,
-        // the rest are routing outbounds and can be appended.
         configContext.resolvedOutbounds.forEachIndexed { index, spec ->
             buildOutbounds(
                 resolvedOutbound = spec,
@@ -494,15 +660,12 @@ object CoreConfigManager {
             )
         }
 
-        // User routing rules (policyGroupBalancerTags rewrites TAG_PROXY→balancer when main is POLICYGROUP).
         configureRouting(configContext, v2rayConfig, policyGroupBalancerTags)
         configureFakeDns(v2rayConfig)
         configureDns(configContext, v2rayConfig, policyGroupBalancerTags)
         configureLocalDns(configContext, v2rayConfig)
         configureRootModeDns(v2rayConfig)
 
-        // (added by getDns / getCustomLocalDns) to use the balancer, then add
-        // the catch-all balancer rule.
         if (primaryResolvedOutbound.resolvedType == CoreResolvedType.POLICYGROUP) {
             if (v2rayConfig.routing.domainStrategy == "IPIfNonMatch") {
                 v2rayConfig.routing.rules.add(
@@ -709,8 +872,6 @@ object CoreConfigManager {
         val fallbackTag = if (strategyType.supportsObservatory && resolvedOutbound.profile.policyGroupTestOutbounds != false) {
             resolvedOutbound.profile.policyGroupFallbackTag
                 ?.takeIf { it.isNotEmpty() && it != AppConfig.TAG_PROXY }
-            // Xray excludes dead random/roundRobin candidates only when fallbackTag is set;
-            // without this default, an enabled empty field creates no observatory.
                 ?: membersToAdd.first().tag
         } else null
         val strategy = buildBalancerStrategy(
@@ -776,9 +937,7 @@ object CoreConfigManager {
             ?: error("Failed to parse config template")
     }
 
-
     //endregion
-
 
     //region some sub function
 
@@ -790,6 +949,8 @@ object CoreConfigManager {
      * Configure inbound listeners and related runtime options.
      */
     private fun configureInbounds(v2rayConfig: V2rayConfig) {
+        val inbound1 = v2rayConfig.inbounds.firstOrNull() ?: return
+
         val vpn = SettingsManager.isVpnMode()
         val useHev = SettingsManager.isUsingHevTun()
         val forcedByHev = vpn && useHev
@@ -801,7 +962,6 @@ object CoreConfigManager {
         val socksPort = SettingsManager.getSocksPort()
         val socksUsername = SettingsManager.getSocksUsername()
         val socksPassword = SettingsManager.getSocksPassword()
-        val inbound1 = v2rayConfig.inbounds[0]
         if (inbound1.settings == null) {
             inbound1.settings = V2rayConfig.InboundBean.InSettingsBean()
         }
@@ -870,44 +1030,6 @@ object CoreConfigManager {
     }
 
     /**
-     * Collect domain rules that target one outbound tag.
-     */
-    private fun collectUserRuleDomainsByTag(tag: String): ArrayList<String> {
-        val domain = ArrayList<String>()
-
-        val rulesetItems = MmkvManager.decodeRoutingRulesets()
-        rulesetItems?.forEach { key ->
-            if (key.enabled && key.outboundTag == tag && !key.domain.isNullOrEmpty()) {
-                key.domain?.forEach {
-                    domain.add(it)
-                }
-            }
-        }
-
-        return domain
-    }
-
-    /**
-     * Collect domain rules that target non-builtin outbound tags.
-     */
-    private fun collectCustomOutboundDomains(): ArrayList<String> {
-        val domain = ArrayList<String>()
-
-        val rulesetItems = MmkvManager.decodeRoutingRulesets()
-        rulesetItems?.forEach { key ->
-            if (key.enabled && !AppConfig.BUILTIN_OUTBOUND_TAGS.contains(key.outboundTag)
-                && !key.domain.isNullOrEmpty()
-            ) {
-                key.domain?.forEach {
-                    domain.add(it)
-                }
-            }
-        }
-
-        return domain
-    }
-
-    /**
      * Configure local DNS inbounds, outbounds, and routing rules.
      */
     private fun configureLocalDns(configContext: CoreConfigContext, v2rayConfig: V2rayConfig) {
@@ -921,10 +1043,9 @@ object CoreConfigManager {
                 .asSequence()
                 .filter { it.outboundTag != AppConfig.TAG_BLOCKED }
                 .flatMap { it.domain.asSequence() }
-                .toList()
                 .distinct()
+                .toList()
             val finalDomain = geositeCn + routingDomains
-            // fakedns with all domains to make it always top priority
             v2rayConfig.dns?.servers?.add(
                 0,
                 V2rayConfig.DnsBean.ServersBean(
@@ -936,7 +1057,6 @@ object CoreConfigManager {
 
         if (SettingsManager.isVpnMode()) {
             if (SettingsManager.isUsingHevTun()) {
-                //hev-socks5-tunnel dns routing
                 v2rayConfig.routing.rules.add(
                     0, V2rayConfig.RoutingBean.RulesBean(
                         inboundTag = arrayListOf("socks"),
@@ -955,7 +1075,6 @@ object CoreConfigManager {
             }
         }
 
-        // DNS outbound
         if (v2rayConfig.outbounds.none { e -> e.protocol == "dns" && e.tag == "dns-out" }) {
             v2rayConfig.outbounds.add(
                 V2rayConfig.OutboundBean(
@@ -970,11 +1089,7 @@ object CoreConfigManager {
     }
 
     /**
-     * In the root mode the whole device's traffic (incl. raw DNS) is funneled
-     * into the core's SOCKS inbound, exactly like the VPN+hev path. Hijack port-53 to the
-     * core's DNS module so queries are resolved via the configured resolver through the
-     * proxy instead of leaking to (or being mis-resolved by) the local network resolver.
-     * Independent of the local-DNS toggle, which is not exposed for root mode.
+     * Hijack port-53 in root mode to the core's DNS module.
      */
     private fun configureRootModeDns(v2rayConfig: V2rayConfig) {
         if (!SettingsManager.isRootMode()) return
@@ -1013,7 +1128,7 @@ object CoreConfigManager {
     }
 
     /**
-     * Configure DNS servers, hosts, and DNS routing rules.
+     * Configure DNS servers, hosts, and route ALL DNS traffic exclusively through proxy.
      */
     private fun configureDns(
         configContext: CoreConfigContext,
@@ -1022,40 +1137,27 @@ object CoreConfigManager {
     ) {
         val servers = ArrayList<Any>()
         val remoteDns = SettingsManager.getRemoteDnsServers()
-        val domesticDns = SettingsManager.getDomesticDnsServers()
-
-        remoteDns.forEach { servers.add(it) }
+        if (remoteDns.isNotEmpty()) {
+            remoteDns.forEach { servers.add(it) }
+        } else {
+            servers.add("https://1.1.1.1/dns-query")
+        }
 
         val hosts = buildDnsHostsFromRoutingRules(configContext)
-        val cnDomesticDnsTags = buildDnsCnModeFromRoutingRules(configContext, servers, domesticDns)
-        val domesticDnsTags = buildDnsFromRoutingRules(
-            configContext = configContext,
-            servers = servers,
-            remoteDns = remoteDns,
-            domesticDns = domesticDns
-        )
-        domesticDnsTags.addAll(cnDomesticDnsTags)
 
         v2rayConfig.dns = V2rayConfig.DnsBean(
             servers = servers,
             hosts = hosts,
             tag = AppConfig.TAG_DNS,
-            enableParallelQuery = if ((domesticDns.size + remoteDns.size) > 2) true else null
+            enableParallelQuery = if (servers.size > 1) true else null
         )
 
-        if (domesticDnsTags.isNotEmpty()) {
-            v2rayConfig.routing.rules.add(
-                V2rayConfig.RoutingBean.RulesBean(
-                    outboundTag = AppConfig.TAG_DIRECT,
-                    inboundTag = ArrayList(domesticDnsTags),
-                    domain = null
-                )
-            )
-        }
-
         val dnsProxyBalancerTag = policyGroupBalancerTags[AppConfig.TAG_PROXY]
+
+        // Force all internal DNS module traffic through proxy (highest priority)
         if (dnsProxyBalancerTag != null) {
             v2rayConfig.routing.rules.add(
+                0,
                 V2rayConfig.RoutingBean.RulesBean(
                     balancerTag = dnsProxyBalancerTag,
                     inboundTag = arrayListOf(AppConfig.TAG_DNS),
@@ -1064,12 +1166,38 @@ object CoreConfigManager {
             )
         } else {
             v2rayConfig.routing.rules.add(
+                0,
                 V2rayConfig.RoutingBean.RulesBean(
                     outboundTag = AppConfig.TAG_PROXY,
                     inboundTag = arrayListOf(AppConfig.TAG_DNS),
                     domain = null
                 )
             )
+        }
+
+        // When local DNS hijacking (dns-out) is disabled, force all port-53 DNS traffic straight through proxy
+        val usesDnsOut = MmkvManager.decodeSettingsBool(AppConfig.PREF_LOCAL_DNS_ENABLED) == true ||
+                SettingsManager.isRootMode()
+        if (!usesDnsOut) {
+            if (dnsProxyBalancerTag != null) {
+                v2rayConfig.routing.rules.add(
+                    0,
+                    V2rayConfig.RoutingBean.RulesBean(
+                        port = "53",
+                        balancerTag = dnsProxyBalancerTag,
+                        domain = null
+                    )
+                )
+            } else {
+                v2rayConfig.routing.rules.add(
+                    0,
+                    V2rayConfig.RoutingBean.RulesBean(
+                        port = "53",
+                        outboundTag = AppConfig.TAG_PROXY,
+                        domain = null
+                    )
+                )
+            }
         }
     }
 
@@ -1106,9 +1234,6 @@ object CoreConfigManager {
             val userHostsMap = userHosts?.split(",").orEmpty()
                 .filter { it.isNotBlank() && it.contains(":") }
                 .associate {
-                    // Use limit = 2 to split only at the first colon.
-                    // This ensures that IPv6 addresses (which contain multiple colons)
-                    // are preserved entirely in the second part.
                     val parts = it.split(":", limit = 2)
                     parts[0].trim() to parts[1].trim()
                 }
@@ -1118,92 +1243,9 @@ object CoreConfigManager {
         return hosts
     }
 
-    private fun buildDnsCnModeFromRoutingRules(configContext: CoreConfigContext, servers: ArrayList<Any>, domesticDns: List<String>): List<String> {
-        val cnRegionFilter = { domain: String ->
-            domain.startsWith("geosite:") && (domain.endsWith("-cn") || domain.endsWith("@cn"))
-                    || domain == AppConfig.GEOSITE_CN
-        }
-        val isCnRoutingMode = configContext.routingDomainRules
-            .asSequence()
-            .filter { it.outboundTag == AppConfig.TAG_DIRECT }
-            .flatMap { it.domain.asSequence() }
-            .any { it == AppConfig.GEOSITE_CN }
-
-        if (!isCnRoutingMode) {
-            return emptyList()
-        }
-
-        val geoipCn = arrayListOf(AppConfig.GEOIP_CN)
-        val cnDomains = configContext.routingDomainRules
-            .asSequence()
-            .filter { it.outboundTag == AppConfig.TAG_DIRECT }
-            .flatMap { it.domain.asSequence() }
-            .filter { cnRegionFilter(it) }
-            .toList()
-        if (cnDomains.isEmpty()) {
-            return emptyList()
-        }
-
-        val cnDomesticDnsTags = mutableListOf<String>()
-        domesticDns.forEachIndexed { index, address ->
-            val cnDomesticDnsTag = "${AppConfig.TAG_DOMESTIC_DNS}_cn_expect_${index}"
-            servers.add(
-                V2rayConfig.DnsBean.ServersBean(
-                    address = address,
-                    domains = cnDomains,
-                    expectIPs = geoipCn,
-                    skipFallback = true,
-                    tag = cnDomesticDnsTag
-                )
-            )
-            cnDomesticDnsTags.add(cnDomesticDnsTag)
-        }
-        return cnDomesticDnsTags
-    }
-
-    private fun buildDnsFromRoutingRules(
-        configContext: CoreConfigContext,
-        servers: ArrayList<Any>,
-        remoteDns: List<String>,
-        domesticDns: List<String>,
-    ): MutableList<String> {
-        val domesticDnsTags = mutableListOf<String>()
-        configContext.routingDomainRules.forEachIndexed { ruleIndex, rule ->
-            when (rule.outboundTag) {
-                AppConfig.TAG_DIRECT -> {
-                    domesticDns.forEachIndexed { dnsIndex, address ->
-                        val tag = "${AppConfig.TAG_DOMESTIC_DNS}_${ruleIndex}_$dnsIndex"
-                        servers.add(
-                            V2rayConfig.DnsBean.ServersBean(
-                                address = address,
-                                domains = rule.domain,
-                                skipFallback = true,
-                                tag = tag
-                            )
-                        )
-                        domesticDnsTags.add(tag)
-                    }
-                }
-
-                AppConfig.TAG_BLOCKED -> Unit
-                else -> {
-                    servers.add(
-                        V2rayConfig.DnsBean.ServersBean(
-                            address = remoteDns.first(),
-                            domains = rule.domain,
-                        )
-                    )
-                }
-            }
-        }
-        return domesticDnsTags
-    }
-
     //endregion
 
-
     //region outbound related functions
-
 
     /**
      * Resolve outbound domains to IPs and write resolved hosts to DNS map.
@@ -1220,7 +1262,7 @@ object CoreConfigManager {
 
         for (item in proxyOutboundList) {
             val domain = item.getServerAddress()
-            if (domain.isNullOrEmpty()) {
+            if (domain.isNullOrEmpty() || isIpAddress(domain)) {
                 continue
             }
 
@@ -1262,9 +1304,7 @@ object CoreConfigManager {
 
     //endregion
 
-
     //region routing related functions
-
 
     /**
      * Merge probe settings from all balancer strategies into the runtime config.
@@ -1305,7 +1345,6 @@ object CoreConfigManager {
         v2rayConfig: V2rayConfig,
         policyGroupBalancerTags: Map<String, String>
     ) {
-
         v2rayConfig.routing.domainStrategy =
             MmkvManager.decodeSettingsString(AppConfig.PREF_ROUTING_DOMAIN_STRATEGY)
                 ?: "AsIs"
@@ -1332,9 +1371,8 @@ object CoreConfigManager {
 
         val rule = JsonUtil.fromJson(JsonUtil.toJson(item), V2rayConfig.RoutingBean.RulesBean::class.java) ?: return
 
-        // Replace specific geoip rules with ext versions
         rule.ip?.let { ipList ->
-            val updatedIpList = ArrayList<String>()
+            val updatedIpList = ArrayList<String>(ipList.size)
             ipList.forEach { ip ->
                 when (ip) {
                     AppConfig.GEOIP_CN -> updatedIpList.add("ext:${AppConfig.GEOIP_ONLY_CN_PRIVATE_DAT}:cn")
@@ -1346,7 +1384,6 @@ object CoreConfigManager {
         }
 
         if (SettingsManager.canUseProcessRouting()) {
-            // Convert process package names to UIDs
             rule.process?.let { processList ->
                 if (processList.isNotEmpty()) {
                     val uids = PackageUidResolver.packageNamesToUids(context, processList)
@@ -1359,13 +1396,11 @@ object CoreConfigManager {
 
         val outboundTag = rule.outboundTag
 
-        // Route rules targeting a custom policy-group tag should hit its balancer.
         policyGroupBalancerTags[outboundTag]?.let { balancerTag ->
             rule.outboundTag = null
             rule.balancerTag = balancerTag
         }
 
-        // If the outbound tag is a custom one that failed to inject, fall back to proxy
         if (!outboundTag.isNullOrBlank()
             && outboundTag !in policyGroupBalancerTags
             && outboundTag !in AppConfig.BUILTIN_OUTBOUND_TAGS
@@ -1377,7 +1412,6 @@ object CoreConfigManager {
 
         v2rayConfig.routing.rules.add(rule)
     }
-
 
     /**
      * Build balancer and probe settings from one policy-group strategy value.

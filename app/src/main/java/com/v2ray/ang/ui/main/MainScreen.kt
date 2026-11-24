@@ -1,7 +1,9 @@
 package com.v2ray.ang.ui.main
 
+import android.content.Context
 import android.graphics.BitmapFactory
-import android.widget.Toast
+import android.os.SystemClock
+import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -29,6 +31,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -70,16 +73,20 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.v2ray.ang.R
 import com.v2ray.ang.dto.entities.ProfileItem
-import com.v2ray.ang.extension.delay
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.ui.compose.QRCodeDialog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -89,6 +96,159 @@ import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.URL
+import java.util.Locale
+import kotlin.math.abs
+
+private const val KEY_START_TIME = "v2m_start_time"
+private const val KEY_START_ELAPSED = "v2m_start_elapsed"
+private const val KEY_START_BOOT_COUNT = "v2m_start_boot_count"
+private const val GEOIP_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+
+private val PING_MS_REGEX = Regex("""(\d+)\s*ms""")
+
+private fun getCurrentBootCount(context: Context): Int {
+    return try {
+        Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, -1)
+    } catch (_: Exception) {
+        -1
+    }
+}
+
+private fun saveFreshTimerState(context: Context) {
+    val nowWall = System.currentTimeMillis()
+    val nowElapsed = SystemClock.elapsedRealtime()
+    val bootCount = getCurrentBootCount(context)
+    MmkvManager.encodeSettings(KEY_START_TIME, nowWall.toString())
+    MmkvManager.encodeSettings(KEY_START_ELAPSED, nowElapsed.toString())
+    MmkvManager.encodeSettings(KEY_START_BOOT_COUNT, bootCount.toString())
+}
+
+private fun clearSavedTimerState() {
+    MmkvManager.encodeSettings(KEY_START_TIME, "")
+    MmkvManager.encodeSettings(KEY_START_ELAPSED, "")
+    MmkvManager.encodeSettings(KEY_START_BOOT_COUNT, "")
+}
+
+/**
+ * استخراج زمان شروع معتبرِ نشست فعلی با تشخیص خودکار ریست گوشی و تغییر ساعت سیستم
+ */
+private fun resolveOrInitSessionStartElapsed(context: Context): Long {
+    val nowWall = System.currentTimeMillis()
+    val nowElapsed = SystemClock.elapsedRealtime()
+    val estimatedBootWall = nowWall - nowElapsed
+    val currentBootCount = getCurrentBootCount(context)
+
+    val savedWall = MmkvManager.decodeSettingsString(KEY_START_TIME)?.toLongOrNull() ?: 0L
+    val savedElapsed = MmkvManager.decodeSettingsString(KEY_START_ELAPSED)?.toLongOrNull() ?: 0L
+    val savedBootCount = MmkvManager.decodeSettingsString(KEY_START_BOOT_COUNT)?.toIntOrNull() ?: -1
+
+    val isSavedWallFromCurrentBoot =
+        savedWall > 0L &&
+                savedWall >= (estimatedBootWall - 5_000L) &&
+                savedWall <= (nowWall + 5_000L)
+
+    val isSavedElapsedFromCurrentBoot =
+        savedElapsed > 0L &&
+                savedElapsed <= nowElapsed &&
+                (currentBootCount == -1 || savedBootCount == currentBootCount)
+
+    return when {
+        isSavedWallFromCurrentBoot -> {
+            val computedElapsedFromWall = (nowElapsed - (nowWall - savedWall).coerceAtLeast(0L)).coerceAtLeast(0L)
+            if (isSavedElapsedFromCurrentBoot && abs(savedElapsed - computedElapsedFromWall) <= 5_000L) {
+                savedElapsed
+            } else {
+                MmkvManager.encodeSettings(KEY_START_ELAPSED, computedElapsedFromWall.toString())
+                MmkvManager.encodeSettings(KEY_START_BOOT_COUNT, currentBootCount.toString())
+                computedElapsedFromWall
+            }
+        }
+
+        isSavedElapsedFromCurrentBoot -> {
+            val repairedWall = (nowWall - (nowElapsed - savedElapsed)).coerceAtLeast(0L)
+            MmkvManager.encodeSettings(KEY_START_TIME, repairedWall.toString())
+            savedElapsed
+        }
+
+        else -> {
+            // داده قبلی نامعتبر یا مربوط به قبل از ریست گوشی است؛ شروع مجدد از صفر
+            saveFreshTimerState(context)
+            nowElapsed
+        }
+    }
+}
+
+private suspend fun fetchGeoLocationViaProxy(): Triple<String, String, ImageBitmap?>? =
+    withContext(Dispatchers.IO) {
+        val httpPort = SettingsManager.getHttpPort()
+        val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", httpPort))
+
+        var country = ""
+        var code = ""
+
+        val endpoints = listOf(
+            "https://api.ip.sb/geoip" to ("country" to "country_code"),
+            "https://ipwho.is/" to ("country" to "country_code")
+        )
+
+        for ((endpointUrl, keys) in endpoints) {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = (URL(endpointUrl).openConnection(proxy) as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    setRequestProperty("User-Agent", GEOIP_USER_AGENT)
+                    setRequestProperty("Accept", "application/json")
+                }
+
+                if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                    val response = connection.inputStream.bufferedReader().use { it.readText() }
+                    val jsonObject = JSONObject(response)
+                    val parsedCountry = jsonObject.optString(keys.first, "").trim()
+                    val parsedCode = jsonObject.optString(keys.second, "").trim().uppercase(Locale.US)
+                    if (parsedCountry.isNotEmpty() && !parsedCountry.equals("Unknown", ignoreCase = true)) {
+                        country = parsedCountry
+                        code = parsedCode
+                        break
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                connection?.disconnect()
+            }
+        }
+
+        if (country.isEmpty()) return@withContext null
+
+        val downloadedFlag = if (code.length == 2) {
+            var flagConn: HttpURLConnection? = null
+            try {
+                flagConn = (URL("https://flagcdn.com/w80/${code.lowercase(Locale.US)}.png")
+                    .openConnection(proxy) as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    setRequestProperty("User-Agent", GEOIP_USER_AGENT)
+                }
+                if (flagConn.responseCode == HttpURLConnection.HTTP_OK) {
+                    flagConn.inputStream.use { stream ->
+                        BitmapFactory.decodeStream(stream)?.asImageBitmap()
+                    }
+                } else {
+                    null
+                }
+            } catch (_: Exception) {
+                null
+            } finally {
+                flagConn?.disconnect()
+            }
+        } else {
+            null
+        }
+
+        Triple(country, code, downloadedFlag)
+    }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,12 +261,13 @@ fun MainScreen(
     val groups = uiState.groups
     val isLoading by mainViewModel.isLoading.collectAsStateWithLifecycle()
     val isRunning = uiState.isRunning
-    val displayText = mainViewModel.formatStatus(uiState.status) // استخراج وضعیت/پینگ
+    val displayText = mainViewModel.formatStatus(uiState.status)
     val selectedGuid = uiState.selectedGuid
     val doubleColumnDisplay = uiState.doubleColumnDisplay
     val confirmRemove = uiState.confirmRemove
     val shareQRCodeBitmap = uiState.shareQRCodeBitmap
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -117,10 +278,23 @@ fun MainScreen(
     var showDelInvalidConfirm by remember { mutableStateOf(false) }
     var showRemoveConfirm by remember { mutableStateOf<String?>(null) }
     var showConfigList by remember { mutableStateOf(false) }
+    var lastToggleClickMs by remember { mutableLongStateOf(0L) }
 
     var shareTarget by remember { mutableStateOf<Triple<String, ProfileItem, Boolean>?>(null) }
-    val removeServer: (String) -> Unit = { guid ->
-        if (confirmRemove) showRemoveConfirm = guid else onAction(MainAction.RemoveServer(guid))
+
+    val removeServer: (String) -> Unit = remember(confirmRemove, onAction) {
+        { guid ->
+            if (confirmRemove) showRemoveConfirm = guid else onAction(MainAction.RemoveServer(guid))
+        }
+    }
+
+    val dismissConfigSheet: () -> Unit = {
+        showConfigList = false
+        if (showSearch || searchQuery.isNotEmpty()) {
+            showSearch = false
+            searchQuery = ""
+            onAction(MainAction.Search(""))
+        }
     }
 
     val pagerState = rememberPagerState(
@@ -132,12 +306,12 @@ fun MainScreen(
     val lazyGridStates = remember { mutableStateMapOf<String, LazyGridState>() }
     var locateInProgress by remember { mutableStateOf(false) }
 
-    // --- استخراج نام و آی‌پی کانفیگ انتخاب شده ---
-    val selectedProfile = remember(selectedGuid, groups) {
-        MmkvManager.decodeServerConfig(selectedGuid ?: "")
+    // استخراج ایمن نام و آی‌پی کانفیگ انتخاب شده
+    val selectedProfile = remember(selectedGuid, groups, showConfigList) {
+        selectedGuid?.takeIf { it.isNotEmpty() }?.let { MmkvManager.decodeServerConfig(it) }
     }
-    val configName = selectedProfile?.remarks ?: "Select Config"
-    val configIp = selectedProfile?.server ?: "Tap to change"
+    val configName = selectedProfile?.remarks?.takeIf { it.isNotBlank() } ?: "Select Config"
+    val configIp = selectedProfile?.server?.takeIf { it.isNotBlank() } ?: "Tap to change"
 
     LaunchedEffect(groups) {
         val validGroupIds = groups.map { it.id }.toSet()
@@ -170,13 +344,15 @@ fun MainScreen(
             }
     }
 
-    // --- پینگ خودکار هر 20 ثانیه ---
-    LaunchedEffect(isRunning) {
+    // پینگ خودکار هر ۲۰ ثانیه فقط زمانی که برنامه در پیش‌زمینه (Foreground) است
+    LaunchedEffect(isRunning, selectedGuid, lifecycleOwner) {
         if (isRunning) {
-            kotlinx.coroutines.delay(2000)
-            while (isActive) {
-                onAction(MainAction.TestCurrentServer)
-                kotlinx.coroutines.delay(20000)
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                delay(2000L)
+                while (isActive) {
+                    onAction(MainAction.TestCurrentServer)
+                    delay(20000L)
+                }
             }
         }
     }
@@ -186,11 +362,14 @@ fun MainScreen(
         if (!isRunning) return@remember ""
         val pingValue = when {
             displayText.contains("Tap to check", ignoreCase = true) -> "Testing..."
-            displayText.contains("succeeded", ignoreCase = true) || displayText.contains("ms", ignoreCase = true) -> {
-                val match = Regex("(\\d+)\\s*ms").find(displayText)
+            displayText.contains("timeout", ignoreCase = true) ||
+                    displayText.contains("failed", ignoreCase = true) ||
+                    displayText.contains("-1") -> "Timeout"
+            displayText.contains("succeeded", ignoreCase = true) ||
+                    displayText.contains("ms", ignoreCase = true) -> {
+                val match = PING_MS_REGEX.find(displayText)
                 if (match != null) "${match.groupValues[1]} ms" else "Error"
             }
-            displayText.contains("timeout", ignoreCase = true) || displayText.contains("failed", ignoreCase = true) -> "Timeout"
             else -> "Testing..."
         }
         "Ping: $pingValue"
@@ -220,7 +399,7 @@ fun MainScreen(
                     lazyListStates[target.groupId] != null
                 }
                 if (ready) return@repeat
-                delay(16)
+                delay(16L)
             }
 
             if (latestDoubleColumnDisplay) {
@@ -239,7 +418,7 @@ fun MainScreen(
                 }
             }
         } finally {
-            delay(32)
+            delay(32L)
             locateInProgress = false
             mainViewModel.onAction(MainAction.LocateHandled(target))
         }
@@ -248,16 +427,28 @@ fun MainScreen(
     MainDialogs(
         showDelAllConfirm = showDelAllConfirm,
         onDismissDelAll = { showDelAllConfirm = false },
-        onConfirmDelAll = { showDelAllConfirm = false; onAction(MainAction.RemoveAllServers) },
+        onConfirmDelAll = {
+            showDelAllConfirm = false
+            onAction(MainAction.RemoveAllServers)
+        },
         showDelDuplicateConfirm = showDelDuplicateConfirm,
         onDismissDelDuplicate = { showDelDuplicateConfirm = false },
-        onConfirmDelDuplicate = { showDelDuplicateConfirm = false; onAction(MainAction.RemoveDuplicateServers) },
+        onConfirmDelDuplicate = {
+            showDelDuplicateConfirm = false
+            onAction(MainAction.RemoveDuplicateServers)
+        },
         showDelInvalidConfirm = showDelInvalidConfirm,
         onDismissDelInvalid = { showDelInvalidConfirm = false },
-        onConfirmDelInvalid = { showDelInvalidConfirm = false; onAction(MainAction.RemoveInvalidServers) },
+        onConfirmDelInvalid = {
+            showDelInvalidConfirm = false
+            onAction(MainAction.RemoveInvalidServers)
+        },
         showRemoveConfirm = showRemoveConfirm,
         onDismissRemove = { showRemoveConfirm = null },
-        onConfirmRemove = { guid -> showRemoveConfirm = null; onAction(MainAction.RemoveServer(guid)) }
+        onConfirmRemove = { guid ->
+            showRemoveConfirm = null
+            onAction(MainAction.RemoveServer(guid))
+        }
     )
 
     if (shareTarget != null) {
@@ -271,8 +462,12 @@ fun MainScreen(
             onRemove = removeServer,
         )
     }
+
     if (shareQRCodeBitmap != null) {
-        QRCodeDialog(bitmap = shareQRCodeBitmap, onDismiss = { onAction(MainAction.DismissQRCodeDialog) })
+        QRCodeDialog(
+            bitmap = shareQRCodeBitmap,
+            onDismiss = { onAction(MainAction.DismissQRCodeDialog) }
+        )
     }
 
     ModalNavigationDrawer(
@@ -285,7 +480,8 @@ fun MainScreen(
                     onNavigate(route)
                 },
                 onCheckUpdate = {
-                    Toast.makeText(context, "Checking for updates...", Toast.LENGTH_SHORT).show()
+                    scope.launch { drawerState.close() }
+                    onNavigate(MainDestination.CheckUpdate)
                 }
             )
         }
@@ -315,16 +511,28 @@ fun MainScreen(
 
                 TopStatusAndTimer(
                     isRunning = isRunning,
+                    selectedGuid = selectedGuid,
                     pingText = finalFormattedPing,
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(top = 24.dp, start = 24.dp)
+                        .padding(top = 24.dp, start = 24.dp, end = 72.dp)
                 )
 
                 CenterMagicButton(
                     isRunning = isRunning,
                     modifier = Modifier.align(Alignment.Center),
-                    onClick = { onAction(MainAction.ToggleService) }
+                    onClick = {
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastToggleClickMs < 500L) return@CenterMagicButton
+                        lastToggleClickMs = now
+
+                        if (isRunning) {
+                            clearSavedTimerState()
+                        } else {
+                            saveFreshTimerState(context)
+                        }
+                        onAction(MainAction.ToggleService)
+                    }
                 )
 
                 BottomConfigSelector(
@@ -332,7 +540,7 @@ fun MainScreen(
                     configIp = if (selectedGuid.isNullOrEmpty()) "Tap to select server" else configIp,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 32.dp),
+                        .padding(horizontal = 24.dp, vertical = 32.dp),
                     onClick = { showConfigList = true }
                 )
             }
@@ -342,7 +550,7 @@ fun MainScreen(
     if (showConfigList) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
         ModalBottomSheet(
-            onDismissRequest = { showConfigList = false },
+            onDismissRequest = dismissConfigSheet,
             sheetState = sheetState,
             containerColor = Color(0xFF1E1E1E)
         ) {
@@ -364,13 +572,16 @@ fun MainScreen(
                     },
                     onSearchToggle = { show: Boolean -> showSearch = show },
                     onMenuClick = {
-                        showConfigList = false
+                        dismissConfigSheet()
                         scope.launch { drawerState.open() }
                     },
                     onAction = onAction,
                     onMoreMenuAction = { action ->
                         when (action) {
-                            MainMoreMenuAction.RestartService -> onAction(MainAction.RestartService)
+                            MainMoreMenuAction.RestartService -> {
+                                if (isRunning) saveFreshTimerState(context)
+                                onAction(MainAction.RestartService)
+                            }
                             MainMoreMenuAction.DeleteAll -> showDelAllConfirm = true
                             MainMoreMenuAction.DeleteDuplicate -> showDelDuplicateConfirm = true
                             MainMoreMenuAction.DeleteInvalid -> showDelInvalidConfirm = true
@@ -421,7 +632,7 @@ fun MainScreen(
                             lazyGridStates = lazyGridStates,
                             onSelectServer = { guid ->
                                 onAction(MainAction.SelectServer(guid))
-                                showConfigList = false
+                                dismissConfigSheet()
                             },
                             onEditServer = { guid, profile -> onAction(MainAction.EditServer(guid, profile)) },
                             onShareServer = { guid, profile ->
@@ -446,101 +657,76 @@ fun MainScreen(
 }
 
 @Composable
-fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier = Modifier) {
+fun TopStatusAndTimer(
+    isRunning: Boolean,
+    pingText: String,
+    modifier: Modifier = Modifier,
+    selectedGuid: String? = null
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     var secondsConnected by remember { mutableLongStateOf(0L) }
+    var wasRunning by remember { mutableStateOf(false) }
     var locationText by remember { mutableStateOf("") }
     var countryCode by remember { mutableStateOf("") }
     var flagBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
 
-    LaunchedEffect(isRunning) {
+    // مدیریت تایمر اتصال: مقاوم در برابر ریست گوشی، بسته شدن برنامه و تغییر ساعت سیستم
+    LaunchedEffect(isRunning, lifecycleOwner) {
         if (isRunning) {
-            // واکشی لوکیشن و تصویر گرافیکی پرچم با تزریق مستقیم درخواست به پورت پراکسی محلی Xray
-            launch {
-                var retryCount = 0
-                var isLocationFound = false
-
-                while (!isLocationFound && retryCount < 2 && isActive) {
-                    delay(2000) // زمان کوتاه برای اطمینان از آماده بودن Inbound
-                    try {
-                        val result = withContext(Dispatchers.IO) {
-                            val httpPort = SettingsManager.getHttpPort()
-                            val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", httpPort))
-                            val url = URL("https://api.ip.sb/geoip")
-
-                            val connection = url.openConnection(proxy) as HttpURLConnection
-                            connection.requestMethod = "GET"
-                            connection.connectTimeout = 5000
-                            connection.readTimeout = 5000
-
-                            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                                val response = connection.inputStream.bufferedReader().use { it.readText() }
-                                val jsonObject = JSONObject(response)
-                                val country = jsonObject.optString("country", "Unknown")
-                                val code = jsonObject.optString("country_code", "").uppercase()
-
-                                // دانلود تصویر گرافیکی پرچم از طریق همان پراکسی محلی
-                                val downloadedFlag = if (code.length == 2) {
-                                    try {
-                                        val flagUrl = URL("https://flagcdn.com/w80/${code.lowercase()}.png")
-                                        val flagConn = flagUrl.openConnection(proxy) as HttpURLConnection
-                                        flagConn.connectTimeout = 4000
-                                        flagConn.readTimeout = 4000
-                                        if (flagConn.responseCode == HttpURLConnection.HTTP_OK) {
-                                            flagConn.inputStream.use { stream ->
-                                                BitmapFactory.decodeStream(stream)?.asImageBitmap()
-                                            }
-                                        } else null
-                                    } catch (_: Exception) {
-                                        null
-                                    }
-                                } else null
-
-                                Triple(country, code, downloadedFlag)
-                            } else {
-                                Triple("Failed", "", null)
-                            }
-                        }
-
-                        val (location, code, downloadedFlag) = result
-                        if (location.isNotEmpty() && location != "Failed" && location != "Unknown") {
-                            locationText = "Location: $location"
-                            countryCode = code
-                            flagBitmap = downloadedFlag
-                            isLocationFound = true
-                        } else {
-                            retryCount++
-                        }
-                    } catch (e: Exception) {
-                        retryCount++
-                    }
+            wasRunning = true
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                val startElapsed = resolveOrInitSessionStartElapsed(context)
+                while (isActive) {
+                    secondsConnected = ((SystemClock.elapsedRealtime() - startElapsed) / 1000L).coerceAtLeast(0L)
+                    delay(1000L)
                 }
-            }
-
-            while (isActive) {
-                // خواندن زمان استارت از دیتابیس به صورت متن و تبدیل به عدد
-                val startTimeStr = com.v2ray.ang.handler.MmkvManager.decodeSettingsString("v2m_start_time")
-                val startTime = startTimeStr?.toLongOrNull() ?: 0L
-
-                if (startTime > 0L) {
-                    // محاسبه اختلاف زمان فعلی با زمان استارت
-                    secondsConnected = (System.currentTimeMillis() - startTime) / 1000
-                } else {
-                    secondsConnected = 0L
-                }
-                kotlinx.coroutines.delay(1000)
             }
         } else {
             secondsConnected = 0L
+            if (wasRunning) {
+                wasRunning = false
+                clearSavedTimerState()
+            } else {
+                // مهلت کوتاه در شروع سرد برای اینکه اگر سرویس در پس‌زمینه متصل است، تایمر آن پاک نشود
+                delay(1500L)
+                clearSavedTimerState()
+            }
+        }
+    }
+
+    // واکشی لوکیشن و پرچم هنگام اتصال یا تعویض سرور
+    LaunchedEffect(isRunning, selectedGuid) {
+        if (!isRunning) {
             locationText = ""
             countryCode = ""
             flagBitmap = null
+            return@LaunchedEffect
+        }
+
+        locationText = ""
+        countryCode = ""
+        flagBitmap = null
+
+        var attempt = 0
+        while (attempt < 3 && isActive) {
+            delay(if (attempt == 0) 1800L else 2500L)
+            val result = fetchGeoLocationViaProxy()
+            if (result != null) {
+                locationText = "Location: ${result.first}"
+                countryCode = result.second
+                flagBitmap = result.third
+                break
+            }
+            attempt++
         }
     }
 
     val hours = secondsConnected / 3600
     val minutes = (secondsConnected % 3600) / 60
     val seconds = secondsConnected % 60
-    val timeString = String.format("%02d:%02d:%02d", hours, minutes, seconds)
+    val timeString = String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
 
     Column(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -568,33 +754,36 @@ fun TopStatusAndTimer(isRunning: Boolean, pingText: String, modifier: Modifier =
             exit = fadeOut(),
             modifier = Modifier.padding(top = 24.dp)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(horizontalAlignment = Alignment.Start) {
                 Text(
                     text = timeString,
                     color = Color.White,
                     fontSize = 42.sp,
                     fontWeight = FontWeight.Light,
-                    letterSpacing = 2.sp
+                    letterSpacing = 2.sp,
+                    maxLines = 1
                 )
                 if (pingText.isNotEmpty()) {
                     Text(
                         text = pingText,
                         color = Color(0xFFB0B0B0),
                         fontSize = 13.sp,
+                        maxLines = 1,
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
-                // نمایش نام کشور به همراه پرچم گرافیکی و انیمیشنی در جلوی آن
                 if (locationText.isNotEmpty()) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
                         modifier = Modifier.padding(top = 6.dp)
                     ) {
                         Text(
                             text = locationText,
                             color = Color(0xFFB0B0B0),
-                            fontSize = 13.sp
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         AnimatedCountryFlag(
@@ -619,7 +808,6 @@ fun AnimatedCountryFlag(
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "flagWaveTransition")
 
-    // ۱. انیمیشن چرخش و اهتزاز سه‌بعدی پرچم
     val waveRotationY by infiniteTransition.animateFloat(
         initialValue = -14f,
         targetValue = 14f,
@@ -640,7 +828,6 @@ fun AnimatedCountryFlag(
         label = "waveRotationZ"
     )
 
-    // ۲. حرکت شناور عمودی نرم
     val floatOffsetY by infiniteTransition.animateFloat(
         initialValue = -1.5f,
         targetValue = 1.5f,
@@ -651,7 +838,6 @@ fun AnimatedCountryFlag(
         label = "floatOffsetY"
     )
 
-    // ۳. موج نوری متحرک روی سطح پرچم (شبیه‌سازی تابش نور روی پارچه در حال اهتزاز)
     val shimmerOffset by infiniteTransition.animateFloat(
         initialValue = -40f,
         targetValue = 80f,
@@ -662,7 +848,6 @@ fun AnimatedCountryFlag(
         label = "shimmerOffset"
     )
 
-    // ۴. ضربان هاله نئونی دور پرچم
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.25f,
         targetValue = 0.65f,
@@ -680,7 +865,6 @@ fun AnimatedCountryFlag(
         modifier = modifier.size(width = 34.dp, height = 24.dp),
         contentAlignment = Alignment.Center
     ) {
-        // هاله نوری پشت پرچم
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -695,7 +879,6 @@ fun AnimatedCountryFlag(
                 )
         )
 
-        // قاب اصلی پرچم با افکت حرکت سه‌بعدی
         Box(
             modifier = Modifier
                 .size(width = 26.dp, height = 18.dp)
@@ -728,7 +911,6 @@ fun AnimatedCountryFlag(
                 )
             }
 
-            // لایه موج نوری و سایه‌روشن اهتزاز روی پرچم
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -753,8 +935,8 @@ fun AnimatedCountryFlag(
  * تبدیل کد دوحرفی کشور (ISO 3166-1 alpha-2) به کاراکتر گرافیکی پرچم
  */
 private fun countryCodeToFlagEmoji(countryCode: String): String {
-    val cleanCode = countryCode.trim().uppercase()
-    if (cleanCode.length != 2 || !cleanCode[0].isLetter() || !cleanCode[1].isLetter()) {
+    val cleanCode = countryCode.trim().uppercase(Locale.US)
+    if (cleanCode.length != 2 || cleanCode[0] !in 'A'..'Z' || cleanCode[1] !in 'A'..'Z') {
         return "🌐"
     }
     val firstChar = Character.codePointAt(cleanCode, 0) - 0x41 + 0x1F1E6
@@ -764,19 +946,14 @@ private fun countryCodeToFlagEmoji(countryCode: String): String {
 
 @Composable
 fun CenterMagicButton(isRunning: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    // رنگ‌های پایه با تم سبز لیمویی برنامه شما
     val neonGreen = Color(0xFFC6F044)
     val brightHighlight = Color(0xFFF2FFCC)
     val midGreen = Color(0xFF689F38)
     val darkCoreCenter = if (isRunning) Color(0xFF162410) else Color(0xFF101612)
     val darkCoreEdge = Color(0xFF070A08)
-
-    // تنظیم شدت شفافیت بر اساس وضعیت اتصال
     val activeAlpha = if (isRunning) 1f else 0.45f
 
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-
-        // ۱. هاله نوری پس‌زمینه (Ambient Outer Glow)
         Box(
             modifier = Modifier
                 .size(280.dp)
@@ -792,7 +969,6 @@ fun CenterMagicButton(isRunning: Boolean, modifier: Modifier = Modifier, onClick
                 )
         )
 
-        // ۲. دایره اصلی دکمه با تک‌حلقه نئونی دور آن (بدون حلقه‌های اضافی بیرونی)
         Box(
             modifier = Modifier
                 .size(180.dp)
@@ -816,7 +992,6 @@ fun CenterMagicButton(isRunning: Boolean, modifier: Modifier = Modifier, onClick
                 .clickable { onClick() },
             contentAlignment = Alignment.Center
         ) {
-            // ۳. آیکون پاور و متن وضعیت
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     painter = painterResource(id = R.drawable.ic_power),
@@ -838,10 +1013,16 @@ fun CenterMagicButton(isRunning: Boolean, modifier: Modifier = Modifier, onClick
 }
 
 @Composable
-fun BottomConfigSelector(configName: String, configIp: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun BottomConfigSelector(
+    configName: String,
+    configIp: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
     Row(
         modifier = modifier
-            .fillMaxWidth(0.85f)
+            .widthIn(max = 520.dp)
+            .fillMaxWidth()
             .height(72.dp)
             .clip(RoundedCornerShape(36.dp))
             .background(Color(0xFF1E1E1E))
@@ -850,7 +1031,10 @@ fun BottomConfigSelector(configName: String, configIp: String, modifier: Modifie
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f)
+        ) {
             Box(
                 modifier = Modifier
                     .size(40.dp)
@@ -868,20 +1052,26 @@ fun BottomConfigSelector(configName: String, configIp: String, modifier: Modifie
 
             Spacer(modifier = Modifier.width(16.dp))
 
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = configName,
                     color = Color.White,
                     fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = configIp,
                     color = Color(0xFF888888),
-                    fontSize = 12.sp
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
+
+        Spacer(modifier = Modifier.width(12.dp))
 
         Icon(
             painter = painterResource(id = R.drawable.ic_arrow_right),

@@ -37,12 +37,51 @@ object SettingsManager {
     @Volatile
     private var runtimeSocksPort: Int? = null
 
+    private val DEFAULT_V2M_ROUTING_RULES_JSON = """
+        [
+          {
+            "remarks": "Iran IP Direct",
+            "ip": ["geoip:ir"],
+            "outboundTag": "direct",
+            "enabled": true
+          },
+          {
+            "remarks": "China IP Direct",
+            "ip": ["geoip:cn"],
+            "outboundTag": "direct",
+            "enabled": true
+          },
+          {
+            "remarks": "Russia IP Direct",
+            "ip": ["geoip:ru"],
+            "outboundTag": "direct",
+            "enabled": true
+          },
+          {
+            "remarks": "Block Porn",
+            "domain": ["geosite:category-porn"],
+            "outboundTag": "block",
+            "enabled": false
+          },
+          {
+            "remarks": "Block Ads",
+            "domain": ["geosite:category-ads-all"],
+            "outboundTag": "block",
+            "enabled": true
+          }
+        ]
+    """.trimIndent()
+
     fun initApp(context: Context) {
         ensureDefaultSettings()
         //ensureDefaultSubscription()
         initRoutingRulesets(context)
         migrateServerListToSubscriptions()
         migrateHysteria2PinSHA256()
+    }
+
+    private fun getDefaultV2mRulesets(): MutableList<RulesetItem>? {
+        return JsonUtil.fromJsonSafe(DEFAULT_V2M_ROUTING_RULES_JSON, Array<RulesetItem>::class.java)?.toMutableList()
     }
 
     /**
@@ -52,7 +91,7 @@ object SettingsManager {
     private fun initRoutingRulesets(context: Context) {
         val exist = MmkvManager.decodeRoutingRulesets()
         if (exist.isNullOrEmpty()) {
-            val rulesetList = getPresetRoutingRulesets(context)
+            val rulesetList = getDefaultV2mRulesets() ?: getPresetRoutingRulesets(context)
             MmkvManager.encodeRoutingRulesets(rulesetList)
         }
     }
@@ -64,6 +103,10 @@ object SettingsManager {
      * @return A mutable list of RulesetItem.
      */
     private fun getPresetRoutingRulesets(context: Context, type: RoutingType = RoutingType.WHITE): MutableList<RulesetItem>? {
+        if (type == RoutingType.WHITE) {
+            getDefaultV2mRulesets()?.let { return it }
+        }
+
         val assets = Utils.readTextFromAssets(context, type.fileName)
         if (TextUtils.isEmpty(assets)) {
             return null
@@ -388,11 +431,6 @@ object SettingsManager {
 
     /**
      * Retrieves the currently selected VPN interface address configuration.
-     * This method reads the user's preference for VPN interface addressing and returns
-     * the corresponding configuration containing IPv4 and IPv6 addresses.
-     *
-     * @return The selected VpnInterfaceAddressConfig instance, or the default configuration
-     *         if no valid selection is found or if the stored index is invalid.
      */
     fun getCurrentVpnInterfaceAddressConfig(): VpnInterfaceAddressConfig {
         val selectedIndex = MmkvManager.decodeSettingsString(AppConfig.PREF_VPN_INTERFACE_ADDRESS_CONFIG_INDEX, "0")?.toInt()
@@ -431,7 +469,7 @@ object SettingsManager {
     }
 
     /**
-     *  Check if process routing can be used.
+     * Check if process routing can be used.
      */
     fun canUseProcessRouting(): Boolean {
         // Android 10+
@@ -458,6 +496,7 @@ object SettingsManager {
     private fun ensureDefaultSettings() {
         // Write defaults in the exact order requested by the user
         ensureDefaultValue(AppConfig.PREF_MODE, VPN)
+        ensureDefaultValue(AppConfig.PREF_ROUTING_DOMAIN_STRATEGY, "IPIfNonMatch")
         ensureDefaultValue(AppConfig.PREF_VPN_DNS, AppConfig.DNS_VPN)
         ensureDefaultValue(AppConfig.PREF_VPN_MTU, AppConfig.VPN_MTU.toString())
         ensureDefaultValue(AppConfig.PREF_SOCKS_PORT, AppConfig.PORT_SOCKS)
@@ -511,10 +550,6 @@ object SettingsManager {
 
     /**
      * Migrates server list from legacy KEY_ANG_CONFIGS to subscription-based storage.
-     * This method should be called once during app initialization after the storage structure change.
-     * Servers are grouped by their subscriptionId into respective subscription's serverList.
-     * Servers without subscription are moved to the default subscription.
-     * After migration, KEY_ANG_CONFIGS is removed.
      */
     private fun migrateServerListToSubscriptions() {
         // Check if migration has already been done
@@ -554,15 +589,12 @@ object SettingsManager {
             MmkvManager.encodeServerList(serverGuids, subId)
         }
 
-
         // Mark migration as complete
         MmkvManager.encodeSettings(migrationKey, true)
     }
 
     /**
      * Ensures the default subscription exists for ungrouped servers.
-     * This subscription is used internally to store servers without a subscription.
-     * Made public for migration in SettingsManager.
      */
     private fun ensureDefaultSubscription() {
         if (decodeSubscription(DEFAULT_SUBSCRIPTION_ID) == null) {
