@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,7 +30,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,30 +47,22 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.v2ray.ang.AppConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.dto.entities.RulesetItem
 import com.v2ray.ang.extension.toastError
 import com.v2ray.ang.extension.toastSuccess
-import com.v2ray.ang.handler.MmkvManager
-import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.ui.base.HelperBaseComponentActivity
 import com.v2ray.ang.ui.compose.AppTopBar
+import com.v2ray.ang.ui.compose.NavigationBarsBottomPadding
 import com.v2ray.ang.ui.compose.ReorderableListItem
 import com.v2ray.ang.ui.compose.SettingsListItem
-import com.v2ray.ang.ui.compose.NavigationBarsBottomPadding
 import com.v2ray.ang.ui.compose.verticalScrollbar
-import com.v2ray.ang.util.JsonUtil
-import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
+import java.util.Locale
 
-// منوهای قدیمی حذف شده و منوی اختصاصی V2m جایگزین شد
 private enum class RoutingMenuAction(val label: String) {
     RestoreDefaults("Restore V2m Defaults"),
     ImportClipboard("Import from Clipboard"),
@@ -80,33 +72,34 @@ private enum class RoutingMenuAction(val label: String) {
 
 class RoutingSettingActivity : HelperBaseComponentActivity() {
     private val viewModel: RoutingSettingsViewModel by viewModels()
-    private val domainStrategyState = MutableStateFlow("")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // تنظیم اجباری Domain Strategy روی IPIfNonMatch در اجرای اول و افزودن ۵ قانون اصلی
-        if (MmkvManager.decodeSettingsBool("v2m_routing_setup_force_v1", false) != true) {
-            MmkvManager.encodeSettings(AppConfig.PREF_ROUTING_DOMAIN_STRATEGY, "IPIfNonMatch")
-            restoreV2mDefaults(showToast = false)
-            MmkvManager.encodeSettings("v2m_routing_setup_force_v1", true)
+        lifecycleScope.launch {
+            if (!viewModel.ensureV2mDefaultsIfFirstLaunch()) {
+                viewModel.reload()
+            }
         }
-
-        domainStrategyState.value = getDomainStrategy()
     }
 
     @Composable
     override fun ScreenContent() {
         RoutingSettingScreen(
             viewModel = viewModel,
-            domainStrategyState = domainStrategyState,
             onBackClick = { finish() },
-            onAddRule = { startActivity(Intent(this, RoutingEditActivity::class.java)) },
-            onDomainStrategySelected = { value ->
-                MmkvManager.encodeSettings(AppConfig.PREF_ROUTING_DOMAIN_STRATEGY, value)
-                domainStrategyState.value = value
+            onAddRule = {
+                startActivity(Intent(this, RoutingEditActivity::class.java))
             },
-            onRestoreDefaults = { restoreV2mDefaults(showToast = true) },
+            onEditRule = { position ->
+                startActivity(
+                    Intent(this, RoutingEditActivity::class.java).putExtra("position", position)
+                )
+            },
+            onDomainStrategySelected = { value ->
+                viewModel.updateDomainStrategy(value)
+            },
+            onRestoreDefaults = { restoreV2mDefaults() },
             onImportClipboard = { importFromClipboard() },
             onImportQRcode = { importQRcode() },
             onExportClipboard = { export2Clipboard() }
@@ -118,69 +111,12 @@ class RoutingSettingActivity : HelperBaseComponentActivity() {
         viewModel.reload()
     }
 
-    private fun getDomainStrategy(): String {
-        val strategies = resources.getStringArray(R.array.routing_domain_strategy)
-        return MmkvManager.decodeSettingsString(AppConfig.PREF_ROUTING_DOMAIN_STRATEGY) ?: "IPIfNonMatch"
-    }
-
-    // تزریق مستقیم قوانین اختصاصی شما
-    private fun restoreV2mDefaults(showToast: Boolean) {
-        val v2mRulesJson = """
-        [
-          {
-            "id": "${Utils.getUuid()}",
-            "remarks": "Iran IP Direct",
-            "ip": ["geoip:ir"],
-            "outboundTag": "direct",
-            "enabled": true
-          },
-          {
-            "id": "${Utils.getUuid()}",
-            "remarks": "China IP Direct",
-            "ip": ["geoip:cn"],
-            "outboundTag": "direct",
-            "enabled": true
-          },
-          {
-            "id": "${Utils.getUuid()}",
-            "remarks": "Russia IP Direct",
-            "ip": ["geoip:ru"],
-            "outboundTag": "direct",
-            "enabled": true
-          },
-          {
-            "id": "${Utils.getUuid()}",
-            "remarks": "Block Porn",
-            "domain": ["geosite:category-porn"],
-            "outboundTag": "block",
-            "enabled": false
-          },
-          {
-            "id": "${Utils.getUuid()}",
-            "remarks": "Block Ads",
-            "domain": ["geosite:category-ads-all"],
-            "outboundTag": "block",
-            "enabled": true
-          }
-        ]
-        """.trimIndent()
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                // ریست کردن و بازنویسی قوانین به صورت خودکار در این متد انجام می‌شود
-                val result = SettingsManager.resetRoutingRulesets(v2mRulesJson)
-                withContext(Dispatchers.Main) {
-                    if (result) {
-                        MmkvManager.encodeSettings(AppConfig.PREF_ROUTING_DOMAIN_STRATEGY, "IPIfNonMatch")
-                        domainStrategyState.value = "IPIfNonMatch"
-                        viewModel.reload()
-                        if (showToast) toastSuccess(R.string.toast_success)
-                    } else {
-                        if (showToast) toastError(R.string.toast_failure)
-                    }
-                }
-            } catch (e: Exception) {
-                LogUtil.e(AppConfig.TAG, "Failed to inject V2m defaults", e)
+    private fun restoreV2mDefaults() {
+        lifecycleScope.launch {
+            if (viewModel.restoreV2mDefaults()) {
+                toastSuccess(R.string.toast_success)
+            } else {
+                toastError(R.string.toast_failure)
             }
         }
     }
@@ -188,15 +124,28 @@ class RoutingSettingActivity : HelperBaseComponentActivity() {
     private fun importFromClipboard() {
         val clipboard = try {
             Utils.getClipboard(this)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             toastError(R.string.toast_failure)
             return
         }
-        lifecycleScope.launch(Dispatchers.IO) {
-            val result = SettingsManager.resetRoutingRulesets(clipboard)
-            withContext(Dispatchers.Main) {
-                if (result) {
-                    viewModel.reload()
+        if (clipboard.isBlank()) {
+            toastError(R.string.toast_failure)
+            return
+        }
+        lifecycleScope.launch {
+            if (viewModel.importRulesets(clipboard)) {
+                toastSuccess(R.string.toast_success)
+            } else {
+                toastError(R.string.toast_failure)
+            }
+        }
+    }
+
+    private fun importQRcode() {
+        launchQRCodeScanner { scanResult ->
+            if (scanResult.isNullOrBlank()) return@launchQRCodeScanner
+            lifecycleScope.launch {
+                if (viewModel.importRulesets(scanResult)) {
                     toastSuccess(R.string.toast_success)
                 } else {
                     toastError(R.string.toast_failure)
@@ -205,30 +154,12 @@ class RoutingSettingActivity : HelperBaseComponentActivity() {
         }
     }
 
-    private fun importQRcode() {
-        launchQRCodeScanner { scanResult ->
-            if (scanResult != null) {
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val result = SettingsManager.resetRoutingRulesets(scanResult)
-                    withContext(Dispatchers.Main) {
-                        if (result) {
-                            viewModel.reload()
-                            toastSuccess(R.string.toast_success)
-                        } else {
-                            toastError(R.string.toast_failure)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private fun export2Clipboard() {
-        val rulesetList = MmkvManager.decodeRoutingRulesets()
-        if (rulesetList.isNullOrEmpty()) {
+        val exported = viewModel.exportRulesetsJson()
+        if (exported.isNullOrEmpty()) {
             toastError(R.string.toast_failure)
         } else {
-            Utils.setClipboard(this, JsonUtil.toJson(rulesetList))
+            Utils.setClipboard(this, exported)
             toastSuccess(R.string.toast_success)
         }
     }
@@ -237,9 +168,9 @@ class RoutingSettingActivity : HelperBaseComponentActivity() {
 @Composable
 fun RoutingSettingScreen(
     viewModel: RoutingSettingsViewModel,
-    domainStrategyState: MutableStateFlow<String>,
     onBackClick: () -> Unit,
     onAddRule: () -> Unit,
+    onEditRule: (Int) -> Unit,
     onDomainStrategySelected: (String) -> Unit,
     onRestoreDefaults: () -> Unit,
     onImportClipboard: () -> Unit,
@@ -247,7 +178,7 @@ fun RoutingSettingScreen(
     onExportClipboard: () -> Unit
 ) {
     val rulesets by viewModel.rulesetsFlow.collectAsStateWithLifecycle()
-    val domainStrategy by domainStrategyState.collectAsState()
+    val domainStrategy by viewModel.domainStrategyFlow.collectAsStateWithLifecycle()
     var showMenu by remember { mutableStateOf(false) }
 
     val domainStrategies = stringArrayResource(R.array.routing_domain_strategy).toList()
@@ -255,7 +186,9 @@ fun RoutingSettingScreen(
     val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
         val fromIndex = rulesets.indexOfFirst { it.id == from.key }
         val toIndex = rulesets.indexOfFirst { it.id == to.key }
-        viewModel.move(fromIndex, toIndex)
+        if (fromIndex >= 0 && toIndex >= 0 && fromIndex != toIndex) {
+            viewModel.move(fromIndex, toIndex)
+        }
     }
 
     Scaffold(
@@ -326,11 +259,12 @@ fun RoutingSettingScreen(
                         entries = domainStrategies,
                         values = domainStrategies,
                         selectedValue = domainStrategy,
-                        onSelected = { onDomainStrategySelected(it) }
+                        onSelected = onDomainStrategySelected
                     )
                 }
             }
-            item {
+
+            item(key = "rules_header") {
                 Text(
                     text = stringResource(R.string.routing_settings_rule_title),
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -350,9 +284,9 @@ fun RoutingSettingScreen(
                     ) {
                         RoutingRulesetItem(
                             ruleset = ruleset,
+                            onItemClick = { onEditRule(index) },
                             onEnabledChange = { checked ->
-                                val updated = ruleset.copy(enabled = checked)
-                                viewModel.update(index, updated)
+                                viewModel.toggleEnabled(ruleset.id, checked)
                             }
                         )
                     }
@@ -365,29 +299,48 @@ fun RoutingSettingScreen(
 @Composable
 private fun RoutingRulesetItem(
     ruleset: RulesetItem,
+    onItemClick: () -> Unit,
     onEnabledChange: (Boolean) -> Unit
 ) {
     val limeGreen = Color(0xFFC6F044)
+    val outboundTag = ruleset.outboundTag.orEmpty().trim()
+    val badgeColor = when (outboundTag.lowercase(Locale.ROOT)) {
+        "direct" -> limeGreen
+        "block" -> Color(0xFFFF5555)
+        else -> Color(0xFF4FC3F7)
+    }
+
+    val ruleSummary = remember(ruleset.domain, ruleset.ip, ruleset.process, ruleset.port) {
+        buildList {
+            if (!ruleset.domain.isNullOrEmpty()) add(ruleset.domain!!.joinToString(", "))
+            if (!ruleset.ip.isNullOrEmpty()) add(ruleset.ip!!.joinToString(", "))
+            if (!ruleset.process.isNullOrEmpty()) add(ruleset.process!!.joinToString(", "))
+            if (!ruleset.port.isNullOrEmpty()) add("port: ${ruleset.port}")
+        }.joinToString(" • ")
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(Color(0xFF1E1E1E))
+            .clickable(onClick = onItemClick)
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = ruleset.remarks ?: "",
+                    text = ruleset.remarks.orEmpty(),
                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 if (ruleset.locked == true) {
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Icon(
                         painter = painterResource(R.drawable.ic_lock_24dp),
                         contentDescription = stringResource(R.string.acc_locked),
@@ -397,26 +350,18 @@ private fun RoutingRulesetItem(
                 }
             }
 
-            // اتصال هوشمندانه نوع متغیرها
-            val domainIpInfo = when {
-                !ruleset.domain.isNullOrEmpty() -> ruleset.domain!!.joinToString(", ")
-                !ruleset.ip.isNullOrEmpty() -> ruleset.ip!!.joinToString(", ")
-                !ruleset.process.isNullOrEmpty() -> ruleset.process!!.joinToString(", ")
-                !ruleset.port.isNullOrEmpty() -> ruleset.port.toString()
-                else -> ""
-            }
-
-            if (domainIpInfo.isNotEmpty()) {
+            if (ruleSummary.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = domainIpInfo,
+                    text = ruleSummary,
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color(0xFF888888),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            if (!ruleset.outboundTag.isNullOrEmpty()) {
+
+            if (outboundTag.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(6.dp))
                 Box(
                     modifier = Modifier
@@ -425,9 +370,9 @@ private fun RoutingRulesetItem(
                         .padding(horizontal = 8.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        text = ruleset.outboundTag!!.uppercase(),
+                        text = outboundTag.uppercase(Locale.ROOT),
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (ruleset.outboundTag!!.lowercase() == "direct") limeGreen else Color(0xFFFF5555)
+                        color = badgeColor
                     )
                 }
             }
@@ -438,7 +383,7 @@ private fun RoutingRulesetItem(
             modifier = Modifier.padding(start = 8.dp)
         ) {
             Switch(
-                checked = ruleset.enabled ?: false,
+                checked = ruleset.enabled,
                 onCheckedChange = onEnabledChange,
                 modifier = Modifier.scale(0.8f),
                 colors = SwitchDefaults.colors(

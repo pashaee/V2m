@@ -9,9 +9,12 @@ import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import android.provider.Settings
 import android.system.OsConstants
 import androidx.core.content.ContextCompat
 import com.v2ray.ang.AppConfig
+import com.v2ray.ang.BuildConfig
 import com.v2ray.ang.contracts.IDialerService
 import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.dto.ConnectionTestResult
@@ -31,27 +34,56 @@ import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import com.v2ray.ang.extension.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.ProcessFinder
 import java.lang.ref.SoftReference
 import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 object CoreServiceManager {
 
+    private const val KEY_START_TIME = "v2m_start_time"
+    private const val KEY_START_ELAPSED = "v2m_start_elapsed"
+    private const val KEY_START_BOOT_COUNT = "v2m_start_boot_count"
+    private const val STOP_WAIT_TIMEOUT_MS = 400L
+
     private val coreController: CoreController = CoreNativeManager.newCoreController(CoreCallback())
     private val mMsgReceive = ReceiveMessageHandler()
+    private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val coreLock = ReentrantLock()
+
+    private val isReceiverRegistered = AtomicBoolean(false)
+    private val isStopping = AtomicBoolean(false)
+
+    @Volatile
     private var currentConfig: ProfileItem? = null
+
+    @Volatile
     private var processFinder: XrayProcessFinder? = null
+
+    @Volatile
     private var browserDialer: IDialerService? = null
+
+    @Volatile
     private var networkMonitor: NetworkMonitor? = null
+
+    @Volatile
+    private var delayTestJob: Job? = null
 
     @Volatile
     private var isReloading = false
 
     /** Tun descriptor the core was started with, null in the proxy only and root run modes. */
+    @Volatile
     private var currentVpnInterface: ParcelFileDescriptor? = null
 
     var serviceControl: SoftReference<ServiceControl>? = null
@@ -60,62 +92,57 @@ object CoreServiceManager {
             val service = value?.get()?.getService()
             CoreNativeManager.initCoreEnv(service)
             if (service != null && processFinder == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                processFinder = XrayProcessFinder(service)
-                coreController.registerProcessFinder(processFinder)
+                val finder = XrayProcessFinder(service.applicationContext)
+                processFinder = finder
+                coreController.registerProcessFinder(finder)
             }
         }
 
     /**
      * Checks if the V2Ray service is running.
-     * @return True if the service is running, false otherwise.
      */
     fun isRunning() = coreController.isRunning
 
     /**
      * Gets the name of the currently running server.
-     * @return The name of the running server.
      */
     fun getRunningServerName() = currentConfig?.remarks.orEmpty()
 
     /**
-     * Refer to the official documentation for [registerReceiver](https://developer.android.com/reference/androidx/core/content/ContextCompat#registerReceiver(android.content.Context,android.content.BroadcastReceiver,android.content.IntentFilter,int):
-     * `registerReceiver(Context, BroadcastReceiver, IntentFilter, int)`.
      * Starts the V2Ray core service.
      */
     fun startCoreLoop(vpnInterface: ParcelFileDescriptor?): Boolean {
-        if (isRunning()) {
-            LogUtil.w(AppConfig.TAG, "StartCore-Manager: Core already running")
-            return false
-        }
-
         val service = getService()
         if (service == null) {
             LogUtil.e(AppConfig.TAG, "StartCore-Manager: Service is null")
             return false
         }
 
-        try {
-            doStartCoreLoop(service, vpnInterface)
-            return true
-        } catch (e: Exception) {
-            val message = e.message?.takeUnless { it.isBlank() } ?: e.javaClass.simpleName
-            LogUtil.e(AppConfig.TAG, "StartCore-Manager: $message", e)
-            MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, message)
-            NotificationManager.cancelNotification()
-            return false
+        return coreLock.withLock {
+            if (isRunning()) {
+                LogUtil.w(AppConfig.TAG, "StartCore-Manager: Core already running")
+                return@withLock false
+            }
+
+            isStopping.set(false)
+            try {
+                doStartCoreLoop(service, vpnInterface)
+                true
+            } catch (e: Exception) {
+                val message = e.message?.takeUnless { it.isBlank() } ?: e.javaClass.simpleName
+                LogUtil.e(AppConfig.TAG, "StartCore-Manager: $message", e)
+                cleanupFailedStart(service)
+                MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, message)
+                false
+            }
         }
     }
 
     @Throws(Exception::class)
     private fun doStartCoreLoop(service: Service, vpnInterface: ParcelFileDescriptor?) {
-        val mFilter = IntentFilter(AppConfig.BROADCAST_ACTION_SERVICE)
-        mFilter.addAction(Intent.ACTION_SCREEN_ON)
-        mFilter.addAction(Intent.ACTION_SCREEN_OFF)
-        mFilter.addAction(Intent.ACTION_USER_PRESENT)
-        ContextCompat.registerReceiver(service, mMsgReceive, mFilter, Utils.receiverFlags())
-
         currentVpnInterface = vpnInterface
-        launchCore(service, vpnInterface)
+        launchCore(service, vpnInterface, isReload = false)
+        registerReceiverSafely(service)
         startNetworkMonitor(service)
     }
 
@@ -126,52 +153,56 @@ object CoreServiceManager {
 
         LogUtil.i(AppConfig.TAG, "StartCore-Manager: Starting core loop for ${config.remarks}")
         val result = CoreConfigManager.getV2rayConfig(service, guid)
-        LogUtil.d(AppConfig.TAG, result.content)
+        if (BuildConfig.DEBUG) {
+            LogUtil.d(AppConfig.TAG, result.content)
+        }
         if (!result.status) {
             error(result.errorMessage.ifBlank { "Failed to get V2Ray config" })
         }
 
         currentConfig = config
-        var tunFd = vpnInterface?.fd ?: 0
+        val rawFd = try {
+            vpnInterface?.fd ?: 0
+        } catch (_: Exception) {
+            0
+        }
+        val tunFd = if (SettingsManager.isUsingHevTun() || rawFd <= 0) 0 else rawFd
+
         val dialerMode = BrowserDialerMode.from(config.browserDialerMode)
         val dialerAddr = if (dialerMode != null) {
             "127.0.0.1:${Utils.findRandomFreePort()}"
         } else {
             ""
         }
-        if (SettingsManager.isUsingHevTun()) {
-            tunFd = 0
-        }
 
         NotificationManager.showNotification(currentConfig)
         if (dialerAddr.isNotNullEmpty()) {
             CoreNativeManager.reconcileBrowserDialer(dialerAddr)
+        } else {
+            CoreNativeManager.reconcileBrowserDialer("")
         }
+
         coreController.startLoop(result.content, tunFd)
 
         if (!isRunning()) {
             error("Core failed to start")
         }
 
-        if (browserDialer != null) {
-            browserDialer!!.stop()
-            browserDialer = null
-        }
+        stopBrowserDialerSafely()
         when (dialerMode) {
             BrowserDialerMode.OKHTTP -> {
-                browserDialer = DialerNativeService()
-                browserDialer!!.start(service, dialerAddr)
+                browserDialer = DialerNativeService().also { it.start(service, dialerAddr) }
             }
 
             BrowserDialerMode.WEBVIEW -> {
-                browserDialer = DialerWebviewService()
-                browserDialer!!.start(service, dialerAddr)
+                browserDialer = DialerWebviewService().also { it.start(service, dialerAddr) }
             }
 
-            else -> {}
+            else -> Unit
         }
 
         if (!isReload) {
+            saveConnectionTimerState(service)
             MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
         }
         NotificationManager.startSpeedNotification()
@@ -180,55 +211,153 @@ object CoreServiceManager {
 
     /**
      * Stops the V2Ray core service.
-     * Unregisters broadcast receivers, stops notifications, and shuts down plugins.
-     * @return True if the core was stopped successfully, false otherwise.
+     * Unregisters broadcast receivers, stops notifications, clears timer state, and shuts down plugins.
      */
     fun stopCoreLoop(): Boolean {
-        val service = getService() ?: return false
+        isStopping.set(true)
+        val service = getService()
 
-        networkMonitor?.unregister()
+        delayTestJob?.cancel()
+        delayTestJob = null
+
+        try {
+            networkMonitor?.unregister()
+        } catch (e: Exception) {
+            LogUtil.w(AppConfig.TAG, "StartCore-Manager: Failed to unregister network monitor", e)
+        }
         networkMonitor = null
         currentVpnInterface = null
+        currentConfig = null
+
+        clearConnectionTimerState()
 
         if (isRunning()) {
-            CoroutineScope(Dispatchers.IO).launch {
+            val stopLatch = CountDownLatch(1)
+            managerScope.launch {
                 try {
-                    coreController.stopLoop()
+                    coreLock.withLock {
+                        if (isRunning()) {
+                            coreController.stopLoop()
+                        }
+                    }
                 } catch (e: Exception) {
                     LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to stop V2Ray loop", e)
+                } finally {
+                    stopLatch.countDown()
                 }
+            }
+            try {
+                stopLatch.await(STOP_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             }
         }
 
-        // Close existing browser dialer
         CoreNativeManager.reconcileBrowserDialer("")
-        if (browserDialer != null) {
-            browserDialer!!.stop()
-            browserDialer = null
+        stopBrowserDialerSafely()
+
+        if (service != null) {
+            MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_STOP_SUCCESS, "")
+            unregisterReceiverSafely(service)
+        } else {
+            isReceiverRegistered.set(false)
         }
 
-        MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_STOP_SUCCESS, "")
         NotificationManager.cancelNotification()
+        return true
+    }
 
+    private fun cleanupFailedStart(service: Service) {
+        delayTestJob?.cancel()
+        delayTestJob = null
+
+        try {
+            networkMonitor?.unregister()
+        } catch (_: Exception) {
+        }
+        networkMonitor = null
+        currentVpnInterface = null
+        currentConfig = null
+
+        clearConnectionTimerState()
+        CoreNativeManager.reconcileBrowserDialer("")
+        stopBrowserDialerSafely()
+        unregisterReceiverSafely(service)
+        NotificationManager.cancelNotification()
+    }
+
+    private fun registerReceiverSafely(service: Service) {
+        if (!isReceiverRegistered.compareAndSet(false, true)) return
+        try {
+            val filter = IntentFilter(AppConfig.BROADCAST_ACTION_SERVICE).apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_USER_PRESENT)
+            }
+            ContextCompat.registerReceiver(service, mMsgReceive, filter, Utils.receiverFlags())
+        } catch (e: Exception) {
+            isReceiverRegistered.set(false)
+            LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to register receiver", e)
+        }
+    }
+
+    private fun unregisterReceiverSafely(service: Service) {
+        if (!isReceiverRegistered.compareAndSet(true, false)) return
         try {
             service.unregisterReceiver(mMsgReceive)
         } catch (e: Exception) {
-            LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to unregister receiver", e)
+            LogUtil.w(AppConfig.TAG, "StartCore-Manager: Failed to unregister receiver", e)
         }
+    }
 
-        return true
+    private fun stopBrowserDialerSafely() {
+        val dialer = browserDialer
+        browserDialer = null
+        if (dialer != null) {
+            try {
+                dialer.stop()
+            } catch (e: Exception) {
+                LogUtil.w(AppConfig.TAG, "StartCore-Manager: Failed to stop browser dialer", e)
+            }
+        }
+    }
+
+    private fun saveConnectionTimerState(context: Context) {
+        try {
+            val nowWall = System.currentTimeMillis()
+            val nowElapsed = SystemClock.elapsedRealtime()
+            val bootCount = try {
+                Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, -1)
+            } catch (_: Exception) {
+                -1
+            }
+            MmkvManager.encodeSettings(KEY_START_TIME, nowWall.toString())
+            MmkvManager.encodeSettings(KEY_START_ELAPSED, nowElapsed.toString())
+            MmkvManager.encodeSettings(KEY_START_BOOT_COUNT, bootCount.toString())
+        } catch (e: Exception) {
+            LogUtil.w(AppConfig.TAG, "StartCore-Manager: Failed to save timer state", e)
+        }
+    }
+
+    private fun clearConnectionTimerState() {
+        try {
+            MmkvManager.encodeSettings(KEY_START_TIME, "")
+            MmkvManager.encodeSettings(KEY_START_ELAPSED, "")
+            MmkvManager.encodeSettings(KEY_START_BOOT_COUNT, "")
+        } catch (e: Exception) {
+            LogUtil.w(AppConfig.TAG, "StartCore-Manager: Failed to clear timer state", e)
+        }
     }
 
     /**
      * Subscribes to upstream network changes for whichever run mode is active.
-     * All three services share this manager, so the tunnel recovers from a handover in proxy only
-     * and root mode as well, not just behind the VPN interface.
      */
     private fun startNetworkMonitor(service: Service) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
         if (networkMonitor != null) return
 
-        val connectivity = service.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val connectivity = service.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return
         networkMonitor = NetworkMonitor(
             connectivity = connectivity,
             onUnderlyingNetworksChanged = { networks -> serviceControl?.get()?.setUnderlyingNetworks(networks) },
@@ -237,37 +366,43 @@ object CoreServiceManager {
     }
 
     /**
-     * Restarts the core in place after the upstream network changed: the service, the notification
-     * and the VPN interface all stay up, so nothing of this is visible.
-     *
-     * The config is rebuilt on purpose, outbound server domains are resolved while building it and
-     * an address resolved on a network that is gone can be unusable on the new one.
-     *
-     * @return True if the core is running again.
+     * Restarts the core in place after the upstream network changed.
      */
     private fun reloadCore(): Boolean {
-        if (isReloading) return false
+        if (isReloading || isStopping.get()) return false
         val service = getService() ?: return false
-        if (!isRunning()) return false
 
-        return try {
-            val tunFd = currentVpnInterface
+        return coreLock.withLock {
+            if (isReloading || isStopping.get() || !isRunning()) return@withLock false
 
             isReloading = true
-            LogUtil.i(AppConfig.TAG, "StartCore-Manager: Core reload start...")
+            try {
+                val vpnInterface = currentVpnInterface
+                LogUtil.i(AppConfig.TAG, "StartCore-Manager: Core reload start...")
 
-            coreController.stopLoop()
-            launchCore(service, tunFd, isReload = true)
+                coreController.stopLoop()
+                if (isStopping.get()) {
+                    return@withLock false
+                }
+                launchCore(service, vpnInterface, isReload = true)
 
-            LogUtil.i(AppConfig.TAG, "StartCore-Manager: Core reload finished")
-            true
-        } catch (e: Exception) {
-            val message = e.message?.takeUnless { it.isBlank() } ?: e.javaClass.simpleName
-            LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to reload core: $message", e)
-            MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, message)
-            false
-        } finally {
-            isReloading = false
+                LogUtil.i(AppConfig.TAG, "StartCore-Manager: Core reload finished")
+                true
+            } catch (e: Exception) {
+                val message = e.message?.takeUnless { it.isBlank() } ?: e.javaClass.simpleName
+                LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to reload core: $message", e)
+                clearConnectionTimerState()
+                stopBrowserDialerSafely()
+                MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, message)
+                NotificationManager.cancelNotification()
+                // Tear down the VPN service so traffic is not stuck in a dead interface
+                managerScope.launch(Dispatchers.Main) {
+                    serviceControl?.get()?.stopService()
+                }
+                false
+            } finally {
+                isReloading = false
+            }
         }
     }
 
@@ -276,13 +411,18 @@ object CoreServiceManager {
      * Go side format: tag,direction,value;tag,direction,value;
      */
     fun queryAllOutboundTrafficStats(): List<OutboundTrafficStat> {
-        // The stats manager is gone once the core stops, querying it then reaches into freed state.
-        if (!isRunning()) return emptyList()
+        if (!isRunning() || isStopping.get()) return emptyList()
 
-        val payload = coreController.queryAllOutboundTrafficStats()
+        val payload = try {
+            coreController.queryAllOutboundTrafficStats()
+        } catch (e: Exception) {
+            LogUtil.w(AppConfig.TAG, "StartCore-Manager: Failed to query outbound traffic stats", e)
+            return emptyList()
+        }
+
+        if (payload.isNullOrBlank()) return emptyList()
 
         val result = ArrayList<OutboundTrafficStat>()
-
         payload.split(';').forEach { entry ->
             if (entry.isBlank()) return@forEach
 
@@ -290,7 +430,6 @@ object CoreServiceManager {
             if (parts.size != 3) return@forEach
 
             val value = parts[2].toLongOrNull() ?: return@forEach
-
             result.add(
                 OutboundTrafficStat(
                     tag = parts[0],
@@ -299,21 +438,19 @@ object CoreServiceManager {
                 )
             )
         }
-//        LogUtil.d(AppConfig.TAG, "Queried outbound traffic stats: $result")
         return result
     }
 
     /**
      * Measures the connection delay for the current V2Ray configuration.
-     * Tests with primary URL first, then falls back to alternative URL if needed.
-     * Also fetches remote IP information if the delay test was successful.
      */
     private fun measureV2rayDelay() {
-        if (!isRunning()) {
+        if (!isRunning() || isStopping.get()) {
             return
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
+        delayTestJob?.cancel()
+        delayTestJob = managerScope.launch {
             val service = getService() ?: return@launch
             var time = -1L
             var errorStr = ""
@@ -324,7 +461,7 @@ object CoreServiceManager {
                 LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to measure delay", e)
                 errorStr = e.message?.substringAfter("\":").orEmpty()
             }
-            if (time == -1L) {
+            if (time == -1L && isRunning() && !isStopping.get()) {
                 try {
                     time = coreController.measureDelay(SettingsManager.getDelayTestUrl(true))
                 } catch (e: Exception) {
@@ -333,15 +470,17 @@ object CoreServiceManager {
                 }
             }
 
+            if (!isRunning() || isStopping.get()) return@launch
+
             val result = ConnectionTestResult(
                 delayMillis = time,
                 errorMessage = errorStr,
             )
             MessageHelper.sendMsg2UI(service, AppConfig.MSG_MEASURE_DELAY_RESULT, result)
 
-            // Only fetch IP info if the delay test was successful
-            if (time >= 0) {
+            if (time >= 0 && isRunning() && !isStopping.get()) {
                 SpeedtestManager.getRemoteIPInfo()?.let { ip ->
+                    if (!isRunning() || isStopping.get()) return@let
                     MessageHelper.sendMsg2UI(
                         service,
                         AppConfig.MSG_MEASURE_DELAY_RESULT,
@@ -355,79 +494,59 @@ object CoreServiceManager {
         }
     }
 
-    /**
-     * Gets the current service instance.
-     * @return The current service instance, or null if not available.
-     */
     private fun getService(): Service? {
         return serviceControl?.get()?.getService()
     }
 
-    /**
-     * Core callback handler implementation for handling V2Ray core events.
-     * Handles startup, shutdown, socket protection, and status emission.
-     */
     private class CoreCallback : CoreCallbackHandler {
-        /**
-         * Called when V2Ray core starts up.
-         * @return 0 for success, any other value for failure.
-         */
         override fun startup(): Long {
             LogUtil.i(AppConfig.TAG, "StartCore-Manager: CoreCallback startup")
             return 0
         }
 
-        /**
-         * Called when V2Ray core shuts down.
-         * @return 0 for success, any other value for failure.
-         */
         override fun shutdown(): Long {
             LogUtil.i(AppConfig.TAG, "StartCore-Manager: CoreCallback shutdown")
             return 0
         }
 
-        /**
-         * Called when V2Ray core emits status information.
-         * @param l Status code.
-         * @param s Status message.
-         * @return Always returns 0.
-         */
         override fun onEmitStatus(l: Long, s: String?): Long {
             LogUtil.i(AppConfig.TAG, "StartCore-Manager: CoreCallback onEmitStatus $s")
             return 0
         }
     }
 
-    /**
-     * Process finder implementation for Xray core.
-     * Uses ConnectivityManager to find the owning UID of a connection based on network parameters.
-     */
     private class XrayProcessFinder(context: Context) : ProcessFinder {
-        private val cm: ConnectivityManager? = context.getSystemService(ConnectivityManager::class.java)
+        private val cm: ConnectivityManager? =
+            context.applicationContext.getSystemService(ConnectivityManager::class.java)
 
-        override fun findProcessByConnection(network: String, srcIP: String, srcPort: Long, destIP: String, destPort: Long): Long {
+        override fun findProcessByConnection(
+            network: String,
+            srcIP: String,
+            srcPort: Long,
+            destIP: String,
+            destPort: Long
+        ): Long {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1L
-            if (cm == null) return -1L
+            val connectivityManager = cm ?: return -1L
             val proto = when (network) {
                 "tcp" -> OsConstants.IPPROTO_TCP
                 "udp" -> OsConstants.IPPROTO_UDP
                 else -> return -1L
             }
 
-            if (destIP.isBlank() || destPort == 0L) {
-                LogUtil.d(AppConfig.TAG, "ProcessFinder: Find $network connection from $srcIP:$srcPort to :$destPort, (no dest)")
+            if (destIP.isBlank() || destPort <= 0L || srcPort !in 0L..65535L || destPort !in 1L..65535L) {
                 return -1L
             }
 
             return try {
-                val uid = cm.getConnectionOwnerUid(
+                val uid = connectivityManager.getConnectionOwnerUid(
                     proto,
                     InetSocketAddress(srcIP, srcPort.toInt()),
                     InetSocketAddress(destIP, destPort.toInt())
                 ).toLong()
-                LogUtil.d(AppConfig.TAG, "ProcessFinder: Find $network connection from $srcIP:$srcPort to $destIP:$destPort, uid=$uid")
-                //LogUtil.d(AppConfig.TAG, "ProcessFinder: Find $network connection from $srcIP:$srcPort to $destIP:$destPort, uid=$uid,${PackageUidResolver.uidToPackageName(uid.toString())}")
-
+                if (BuildConfig.DEBUG) {
+                    LogUtil.d(AppConfig.TAG, "ProcessFinder: $network $srcIP:$srcPort -> $destIP:$destPort, uid=$uid")
+                }
                 uid
             } catch (_: Exception) {
                 -1L
@@ -435,53 +554,37 @@ object CoreServiceManager {
         }
     }
 
-    /**
-     * Broadcast receiver for handling messages sent to the service.
-     * Handles registration, service control, and screen events.
-     */
     private class ReceiveMessageHandler : BroadcastReceiver() {
-        /**
-         * Handles received broadcast messages.
-         * Processes service control messages and screen state changes.
-         * @param ctx The context in which the receiver is running.
-         * @param intent The intent being received.
-         */
         override fun onReceive(ctx: Context?, intent: Intent?) {
-            val serviceControl = serviceControl?.get() ?: return
+            val control = serviceControl?.get() ?: return
             when (intent?.getIntExtra("key", 0)) {
                 AppConfig.MSG_REGISTER_CLIENT -> {
                     if (isRunning()) {
-                        MessageHelper.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_RUNNING, "")
+                        MessageHelper.sendMsg2UI(control.getService(), AppConfig.MSG_STATE_RUNNING, "")
                     } else {
-                        MessageHelper.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_NOT_RUNNING, "")
+                        MessageHelper.sendMsg2UI(control.getService(), AppConfig.MSG_STATE_NOT_RUNNING, "")
                     }
                 }
 
-                AppConfig.MSG_UNREGISTER_CLIENT -> {
-                    // nothing to do
-                }
-
-                AppConfig.MSG_STATE_START -> {
-                    // nothing to do
-                }
+                AppConfig.MSG_UNREGISTER_CLIENT,
+                AppConfig.MSG_STATE_START -> Unit
 
                 AppConfig.MSG_STATE_STOP -> {
                     LogUtil.i(AppConfig.TAG, "StartCore-Manager: Stop service")
-                    serviceControl.stopService()
+                    control.stopService()
                 }
 
                 AppConfig.MSG_STATE_RESTART -> {
                     LogUtil.i(AppConfig.TAG, "StartCore-Manager: Restart service")
-                    // The UI and daemon run in separate processes, so acknowledge the active
-                    // daemon before stopping it instead of relying on possibly stale UI state.
                     if (isOrderedBroadcast) resultCode = Activity.RESULT_OK
 
+                    val appContext = control.getService().applicationContext
                     val pendingResult = goAsync()
-                    CoroutineScope(Dispatchers.Default).launch {
+                    managerScope.launch(Dispatchers.Default) {
                         try {
-                            serviceControl.stopService()
+                            control.stopService()
                             delay(500L)
-                            LauncherManager.startService(serviceControl.getService())
+                            LauncherManager.startService(appContext)
                         } finally {
                             pendingResult.finish()
                         }
@@ -500,8 +603,10 @@ object CoreServiceManager {
                 }
 
                 Intent.ACTION_SCREEN_ON -> {
-                    LogUtil.i(AppConfig.TAG, "StartCore-Manager: Screen on")
-                    NotificationManager.startSpeedNotification()
+                    if (isRunning() && !isStopping.get()) {
+                        LogUtil.i(AppConfig.TAG, "StartCore-Manager: Screen on")
+                        NotificationManager.startSpeedNotification()
+                    }
                 }
             }
         }
